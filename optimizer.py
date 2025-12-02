@@ -558,6 +558,77 @@ class QueryOptimizer:
         refs = self._get_referenced_tables(condition)
         return len(refs) >= 2
 
+# --- SQL reconstruction helpers ---
+
+def collect_where_conditions(node, conditions):
+    """Traverse tree and collect all WHERE-selection conditions (σ nodes)."""
+    if node is None:
+        return
+    if node.node_type == SELECT:
+        conditions.append(node.data)
+        collect_where_conditions(node.left, conditions)
+    else:
+        collect_where_conditions(node.left, conditions)
+        collect_where_conditions(node.right, conditions)
+
+def find_top_project(node):
+    """Find the topmost PROJECT node, if any."""
+    if node is None:
+        return None
+    if node.node_type == PROJECT:
+        return node
+    # Project is always on the left spine in this construction,
+    # but we can safely check both.
+    left = find_top_project(node.left)
+    if left:
+        return left
+    return find_top_project(node.right)
+
+def build_sql_from_tree(root, parsed):
+    """
+    Convert the optimized query tree back into a runnable SQL query.
+    We:
+      - Use optimized projection (if any), else original SELECT or '*'
+      - Keep original FROM, GROUP BY, HAVING, ORDER BY
+      - Rebuild WHERE from all σ nodes in the optimized tree
+    """
+    # SELECT clause
+    project_node = find_top_project(root)
+    if project_node is not None and project_node.data:
+        select_clause = project_node.data
+    else:
+        # fall back to original SELECT or *
+        select_clause = parsed['select'] if parsed['select'] else '*'
+    
+    from_clause = parsed['from']
+    group_by_clause = parsed['group_by']
+    having_clause = parsed['having']
+    order_by_clause = parsed['order_by']
+    
+    # Rebuild WHERE from σ nodes
+    where_conditions = []
+    collect_where_conditions(root, where_conditions)
+    
+    sql_lines = []
+    sql_lines.append("SELECT " + select_clause)
+    sql_lines.append("FROM " + from_clause)
+    
+    if where_conditions:
+        sql_lines.append("WHERE " + " AND ".join(where_conditions))
+    
+    if group_by_clause:
+        sql_lines.append("GROUP BY " + group_by_clause)
+    
+    if having_clause:
+        sql_lines.append("HAVING " + having_clause)
+    
+    if order_by_clause:
+        sql_lines.append("ORDER BY " + order_by_clause)
+    
+    return "\n".join(sql_lines) + ";"
+
+# --- Schema loading and main driver ---
+
 def load_schema_from_file(content):
     schema = {}
     table_pattern = r'(\w+)\s*\((.*?)\);'
@@ -614,6 +685,11 @@ def process_query_file(filename):
         
         print("\nOPTIMIZED QUERY TREE:")
         print(optimized_tree)
+        
+        # NEW: Rebuild optimized SQL
+        optimized_sql = build_sql_from_tree(optimized_tree, parsed)
+        print("\nOPTIMIZED SQL QUERY:")
+        print(optimized_sql)
         
         print("\nOPTIMIZATIONS APPLIED:")
         seen_rules = set()
