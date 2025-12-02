@@ -268,7 +268,7 @@ class QueryOptimizer:
                 attr = parts[1].upper()
                 
                 # Check if this is a join condition (both sides are attributes)
-                is_join = '.' in value or value.replace('_', '').isalpha()
+                is_join = '.' in value or (value.replace('_', '').isalpha() and not value.startswith("'") and not value.startswith('"'))
                 
                 selections.append(Selection(
                     condition=cond,
@@ -305,7 +305,7 @@ class QueryOptimizer:
     
     def optimize(self) -> str:
         """Apply all heuristic optimization rules"""
-        select_attrs, from_tables, where_clause = self.parse_query()
+        select_attrs, from_tables, where_clause, group_by_clause, having_clause = self.parse_query()
         
         output = ["=" * 60]
         output.append("HEURISTIC QUERY OPTIMIZATION")
@@ -324,6 +324,10 @@ class QueryOptimizer:
             output.append(f"  Explicit Joins: {len(self.joins)}")
             for join in self.joins:
                 output.append(f"    {join.left_table} {join.join_type} JOIN {join.right_table} ON {join.condition}")
+        if group_by_clause:
+            output.append(f"  GROUP BY: {group_by_clause}")
+        if having_clause:
+            output.append(f"  HAVING: {having_clause}")
         output.append("")
         
         # Rule #1 & #2: Cascade selections and push down
@@ -351,28 +355,39 @@ class QueryOptimizer:
             output.append("  Filter Conditions:")
             for sel in filter_conditions:
                 output.append(f"    σ({sel.condition})")
+        elif not where_clause:
+            output.append("  No WHERE clause conditions found.")
         
         if join_conditions:
             output.append("  Join Conditions:")
             for sel in join_conditions:
                 output.append(f"    {sel.condition}")
+        
+        if not filter_conditions and not where_clause:
+            output.append("  Not applicable - no filter conditions to cascade.")
         output.append("")
         
         output.append("Rule #2 (Push Selections Down):")
-        output.append("Pushing selections close to base relations...")
-        for sel in filter_conditions:
-            if sel.relation:
-                output.append(f"  σ({sel.condition}) → {sel.relation}")
+        if filter_conditions:
+            output.append("Pushing selections close to base relations...")
+            for sel in filter_conditions:
+                if sel.relation:
+                    output.append(f"  σ({sel.condition}) → {sel.relation}")
+        else:
+            output.append("Not applicable - no filter conditions to push down.")
         output.append("")
         
         # Rule #3: Order by selectivity
         output.append("Rule #3 (Apply Selections with Smallest Selectivity First):")
-        filter_conditions.sort(key=lambda s: s.selectivity_score(self.schema))
-        output.append("Reordering selections by selectivity (most restrictive first):")
-        for i, sel in enumerate(filter_conditions, 1):
-            score = sel.selectivity_score(self.schema)
-            selectivity_desc = self.get_selectivity_description(sel, score)
-            output.append(f"  {i}. σ({sel.condition}) on {sel.relation} (score: {score}) - {selectivity_desc}")
+        if filter_conditions:
+            filter_conditions.sort(key=lambda s: s.selectivity_score(self.schema))
+            output.append("Reordering selections by selectivity (most restrictive first):")
+            for i, sel in enumerate(filter_conditions, 1):
+                score = sel.selectivity_score(self.schema)
+                selectivity_desc = self.get_selectivity_description(sel, score)
+                output.append(f"  {i}. σ({sel.condition}) on {sel.relation} (score: {score}) - {selectivity_desc}")
+        else:
+            output.append("Not applicable - no filter conditions to reorder.")
         output.append("")
         
         # Rule #4: Identify joins
@@ -382,25 +397,33 @@ class QueryOptimizer:
             for join in self.joins:
                 join_symbol = self.get_join_symbol(join.join_type)
                 output.append(f"  {join.left_table} {join_symbol} {join.right_table} ON ({join.condition})")
-        else:
+        elif join_conditions:
             output.append("Converting cross products with join conditions to natural joins...")
-            if join_conditions:
-                output.append(f"  Identified {len(join_conditions)} join condition(s):")
-                for jc in join_conditions:
-                    output.append(f"    {jc.condition}")
-            else:
-                output.append("  No join conditions found (cross product)")
+            output.append(f"  Identified {len(join_conditions)} join condition(s):")
+            for jc in join_conditions:
+                output.append(f"    {jc.condition}")
+        else:
+            output.append("Not applicable - query uses explicit JOIN syntax or no joins present.")
         output.append("")
         
         # Rule #5: Push projections
         output.append("Rule #5 (Push Projections Down):")
         output.append("Pushing projections to eliminate unnecessary attributes early...")
-        output.append(f"  Final projection: {', '.join(select_attrs)}")
+        
+        # Check if query has aggregates
+        has_aggregates = any(func in ' '.join(select_attrs).upper() 
+                            for func in ['COUNT', 'SUM', 'AVG', 'MIN', 'MAX'])
+        
+        if has_aggregates or group_by_clause:
+            output.append("  Query contains aggregate functions and/or GROUP BY.")
+            output.append(f"  Final projection (after aggregation): {', '.join(select_attrs)}")
+        else:
+            output.append(f"  Final projection: {', '.join(select_attrs)}")
         
         # Determine which attributes are needed from each table
-        needed_attrs = self.determine_needed_attributes(select_attrs, all_selections, from_tables)
+        needed_attrs = self.determine_needed_attributes(select_attrs, all_selections, from_tables, group_by_clause)
         if needed_attrs:
-            output.append("  Attributes needed per relation:")
+            output.append("  Attributes needed per relation (before aggregation):")
             for table, attrs in needed_attrs.items():
                 output.append(f"    {table}: {{{', '.join(attrs)}}}")
         output.append("")
@@ -440,10 +463,23 @@ class QueryOptimizer:
                 output.append("    ↑ ⋈ (Joins)")
                 for jc in join_conditions:
                     output.append(f"       Condition: {jc.condition}")
-            else:
+            elif len(from_tables) > 1:
                 output.append("    ↑ × (Cross Product)")
         
-        output.append(f"    ↑ π({', '.join(select_attrs)}) [Final Projection]")
+        # Add GROUP BY if present
+        if group_by_clause:
+            output.append(f"    ↑ γ (GROUP BY {group_by_clause})")
+        
+        # Add HAVING if present
+        if having_clause:
+            output.append(f"    ↑ σ (HAVING {having_clause})")
+        
+        # Final projection
+        if has_aggregates or group_by_clause:
+            output.append(f"    ↑ π({', '.join(select_attrs)}) [Final Projection with Aggregates]")
+        else:
+            output.append(f"    ↑ π({', '.join(select_attrs)}) [Final Projection]")
+        
         output.append("=" * 60)
         
         return '\n'.join(output)
@@ -481,7 +517,8 @@ class QueryOptimizer:
     
     def determine_needed_attributes(self, select_attrs: List[str], 
                                    selections: List[Selection], 
-                                   tables: List[str]) -> Dict[str, Set[str]]:
+                                   tables: List[str],
+                                   group_by_clause: str = "") -> Dict[str, Set[str]]:
         """Determine which attributes are needed from each table"""
         needed = {}
         
@@ -490,7 +527,17 @@ class QueryOptimizer:
             
             # Add attributes from SELECT clause
             for sel_attr in select_attrs:
-                if '.' in sel_attr:
+                # Extract attributes from aggregate functions
+                agg_match = re.search(r'(COUNT|SUM|AVG|MIN|MAX)\s*\(\s*([^)]+)\s*\)', sel_attr, re.IGNORECASE)
+                if agg_match:
+                    arg = agg_match.group(2).strip()
+                    if arg != '*' and '.' in arg:
+                        parts = arg.split('.')
+                        alias = parts[0].upper()
+                        attr = parts[1].upper()
+                        if alias in self.table_aliases and self.table_aliases[alias] == table:
+                            attrs.add(attr)
+                elif '.' in sel_attr:
                     parts = sel_attr.split('.')
                     alias = parts[0].upper()
                     attr = parts[1].upper()
@@ -501,6 +548,17 @@ class QueryOptimizer:
                     attr = sel_attr.strip().upper()
                     if table in self.schema and attr in self.schema[table].attributes:
                         attrs.add(attr)
+            
+            # Add attributes from GROUP BY clause
+            if group_by_clause:
+                group_attrs = [g.strip() for g in group_by_clause.split(',')]
+                for g_attr in group_attrs:
+                    if '.' in g_attr:
+                        parts = g_attr.split('.')
+                        alias = parts[0].upper()
+                        attr = parts[1].upper()
+                        if alias in self.table_aliases and self.table_aliases[alias] == table:
+                            attrs.add(attr)
             
             # Add attributes from conditions
             for sel in selections:
