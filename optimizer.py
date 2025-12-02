@@ -268,7 +268,7 @@ class QueryTreeBuilder:
         return joins
 
 class QueryOptimizer:
-    """Apply heuristic optimization rules"""
+    """Apply heuristic optimization rules + extra credit unnesting"""
     
     def __init__(self, schema, aliases):
         self.schema = schema
@@ -291,7 +291,7 @@ class QueryOptimizer:
         # Rule 5: Push projections down
         root = self._push_projections(root)
         
-        # Extra: Unnest subqueries
+        # Extra credit: unnest IN / NOT IN subqueries into semi/anti-joins
         root = self._unnest_subqueries(root)
         
         return root
@@ -384,10 +384,12 @@ class QueryOptimizer:
         
         child = node.left
 
+        # Chain of σ nodes: push deeper first
         if child and child.node_type == SELECT:
             node.left = self._push_selection_down(child)
             return node
         
+        # Stop at GROUP BY, HAVING, or Outer Joins
         if child and child.node_type in [GROUP, HAVING, OUTER_JOIN]:
             return node
         
@@ -398,6 +400,7 @@ class QueryOptimizer:
             left_tables = self._get_node_tables(child.left)
             right_tables = self._get_node_tables(child.right)
             
+            # If condition references both sides of a CARTESIAN, keep it here for Rule 4
             is_join_condition = (
                 referenced_tables.issubset(left_tables.union(right_tables)) and
                 not referenced_tables.issubset(left_tables) and
@@ -512,19 +515,119 @@ class QueryOptimizer:
         node.left = self._push_projections(node.left)
         node.right = self._push_projections(node.right)
         return node
-    
+
+    # ---------- Extra Credit: Unnest IN / NOT IN into semi/anti-joins ----------
+
+    def _unnest_in_subquery(self, node, anti=False):
+        """
+        Convert a condition of the form:
+            outer_col IN (SELECT inner_col FROM T [alias] [WHERE inner_pred])
+        or
+            outer_col NOT IN (SELECT inner_col FROM T [alias] [WHERE inner_pred])
+        into a SEMI_JOIN (⋉) or ANTI_JOIN (▷) node.
+
+        Assumes node.data is exactly that IN / NOT IN expression
+        (true after Rule 1 splits on AND).
+        """
+        pattern = r"""
+            ^\s*
+            ([A-Za-z_]\w*\.[A-Za-z_]\w*)      # outer_col, e.g. E.Ssn
+            \s+
+            (?:NOT\s+IN|IN)                   # IN / NOT IN
+            \s*\(
+                \s*SELECT\s+
+                ([A-Za-z_]\w*\.[A-Za-z_]\w*)  # inner_col, e.g. W.Essn
+                \s+FROM\s+
+                ([A-Za-z_]\w*(?:\s+[A-Za-z_]\w*)?)  # table or "table alias"
+                (?:\s+WHERE\s+(.*))?          # optional inner WHERE predicate
+            \)\s*
+            $
+        """
+        m = re.match(pattern, node.data, re.IGNORECASE | re.VERBOSE)
+        if not m:
+            return None  # pattern not supported
+        
+        outer_col = m.group(1)
+        inner_col = m.group(2)
+        from_part = m.group(3)
+        inner_where = m.group(4)  # may be None
+
+        # Parse table and alias from FROM part (e.g., "Works_On W" or "Works_On")
+        parts = from_part.split()
+        table_name = parts[0]
+
+        # Build right subtree: relation (and maybe a selection on top)
+        right_rel = QueryNode(RELATION, table_name)
+        if inner_where and inner_where.strip():
+            right_subtree = QueryNode(SELECT, inner_where.strip(), left=right_rel)
+        else:
+            right_subtree = right_rel
+
+        # Left subtree is whatever was under the original σ node
+        left_subtree = node.left
+
+        # Build semi/anti-join node
+        join_type = ANTI_JOIN if anti else SEMI_JOIN
+        join_cond = outer_col + " = " + inner_col
+        join_node = QueryNode(join_type, "", left=left_subtree, right=right_subtree,
+                              join_condition=join_cond)
+
+        return join_node
+
     def _unnest_subqueries(self, node):
+        """
+        Extra credit: unnest nested subquery patterns into semi/anti-joins.
+
+        Supported:
+          - col IN (SELECT col FROM T [WHERE ...])     -> SEMI_JOIN (⋉)
+          - col NOT IN (SELECT col FROM T [WHERE ...]) -> ANTI_JOIN (▷)
+
+        EXISTS/NOT EXISTS are only detected/logged.
+        """
         if node is None:
             return None
+
         if node.node_type == SELECT:
-            if re.search(r'\bIN\s*\(\s*SELECT', node.data, re.IGNORECASE):
-                self.optimizations_applied.append("Extra Credit: Converted IN subquery to semi-join (⋉)")
-            if re.search(r'\bNOT\s+IN|\bNOT\s+EXISTS', node.data, re.IGNORECASE):
-                self.optimizations_applied.append("Extra Credit: Converted NOT IN/EXISTS to anti-join (▷)")
+            text = node.data
+
+            # NOT IN -> anti-join
+            if re.search(r'\bNOT\s+IN\s*\(\s*SELECT', text, re.IGNORECASE):
+                new_node = self._unnest_in_subquery(node, anti=True)
+                if new_node is not None:
+                    self.optimizations_applied.append(
+                        "Extra Credit: Converted NOT IN subquery to anti-join (▷)"
+                    )
+                    new_node.left = self._unnest_subqueries(new_node.left)
+                    new_node.right = self._unnest_subqueries(new_node.right)
+                    return new_node
+
+            # IN -> semi-join
+            if re.search(r'\bIN\s*\(\s*SELECT', text, re.IGNORECASE):
+                new_node = self._unnest_in_subquery(node, anti=False)
+                if new_node is not None:
+                    self.optimizations_applied.append(
+                        "Extra Credit: Converted IN subquery to semi-join (⋉)"
+                    )
+                    new_node.left = self._unnest_subqueries(new_node.left)
+                    new_node.right = self._unnest_subqueries(new_node.right)
+                    return new_node
+
+            # Just log EXISTS / NOT EXISTS if you want
+            if re.search(r'\bEXISTS\s*\(\s*SELECT', text, re.IGNORECASE):
+                self.optimizations_applied.append(
+                    "Extra Credit: (detected) EXISTS subquery (no structural transform)"
+                )
+            if re.search(r'\bNOT\s+EXISTS\s*\(\s*SELECT', text, re.IGNORECASE):
+                self.optimizations_applied.append(
+                    "Extra Credit: (detected) NOT EXISTS subquery (no structural transform)"
+                )
+
         node.left = self._unnest_subqueries(node.left)
         node.right = self._unnest_subqueries(node.right)
         return node
     
+    # ---------- Common helper methods ----------
+
     def _estimate_selectivity(self, condition):
         """Estimate selectivity"""
         if '=' in condition:
@@ -577,8 +680,6 @@ def find_top_project(node):
         return None
     if node.node_type == PROJECT:
         return node
-    # Project is always on the left spine in this construction,
-    # but we can safely check both.
     left = find_top_project(node.left)
     if left:
         return left
@@ -587,17 +688,15 @@ def find_top_project(node):
 def build_sql_from_tree(root, parsed):
     """
     Convert the optimized query tree back into a runnable SQL query.
-    We:
-      - Use optimized projection (if any), else original SELECT or '*'
-      - Keep original FROM, GROUP BY, HAVING, ORDER BY
-      - Rebuild WHERE from all σ nodes in the optimized tree
+
+    NOTE: Semi/anti-join nodes (⋉/▷) are represented only in the tree; this
+    function currently only regenerates WHERE from remaining σ nodes.
     """
     # SELECT clause
     project_node = find_top_project(root)
     if project_node is not None and project_node.data:
         select_clause = project_node.data
     else:
-        # fall back to original SELECT or *
         select_clause = parsed['select'] if parsed['select'] else '*'
     
     from_clause = parsed['from']
@@ -605,7 +704,6 @@ def build_sql_from_tree(root, parsed):
     having_clause = parsed['having']
     order_by_clause = parsed['order_by']
     
-    # Rebuild WHERE from σ nodes
     where_conditions = []
     collect_where_conditions(root, where_conditions)
     
@@ -686,7 +784,6 @@ def process_query_file(filename):
         print("\nOPTIMIZED QUERY TREE:")
         print(optimized_tree)
         
-        # NEW: Rebuild optimized SQL
         optimized_sql = build_sql_from_tree(optimized_tree, parsed)
         print("\nOPTIMIZED SQL QUERY:")
         print(optimized_sql)
