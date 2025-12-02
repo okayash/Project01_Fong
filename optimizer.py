@@ -288,8 +288,7 @@ class QueryOptimizer:
         # Rule 1 & 2: Break up conjunctive selections and push down
         root = self._break_and_push_selections(root)
         
-        # Rule 4: Replace Cartesian product + selection → Join (Fix for Input 1)
-        # Must run after R1/R2 partially creates the σ(×) pattern, but before R3/R5
+        # Rule 4: Replace Cartesian product + selection → Join
         root = self._cartesian_to_join(root)
         
         # Rule 3: Order selections by selectivity 
@@ -344,33 +343,31 @@ class QueryOptimizer:
     
     def _split_conditions(self, condition: str) -> List[str]:
         """
-    Rule 1: Split AND-connected conditions at the top level.
+        Rule 1: Split AND-connected conditions at the top level.
 
-    For this project, we still split on top-level AND even if there are ORs
-    elsewhere in the expression. We only avoid splitting inside parentheses.
+        We still split on top-level AND even if there are ORs elsewhere
+        (only avoid splitting inside parentheses).
         """
         parts = []
         current = ""
         paren_depth = 0
         i = 0
         n = len(condition)
-    
+        
         while i < n:
             char = condition[i]
             if char == '(':
                 paren_depth += 1
             elif char == ')':
                 paren_depth -= 1
-        
-        # Check for top-level AND
+            
+            # Check for top-level AND
             is_and = False
             if paren_depth == 0 and i + 3 <= n:
                 chunk = condition[i:i+3].upper()  # "AND"
                 if chunk == 'AND':
-                    # Check boundary (must be surrounded by whitespace or boundary chars)
                     before_ok = (i == 0) or condition[i-1].isspace() or condition[i-1] in ')'
                     after_ok = (i + 3 == n) or condition[i+3].isspace() or condition[i+3] in '('
-                
                     if before_ok and after_ok:
                         is_and = True
 
@@ -379,19 +376,16 @@ class QueryOptimizer:
                     parts.append(current.strip())
                 current = ""
                 i += 3  # skip "AND"
-                # Consume any trailing whitespace after 'AND'
                 while i < n and condition[i].isspace():
                     i += 1
                 continue
-        
+            
             current += char
             i += 1
-    
+            
         if current.strip():
             parts.append(current.strip())
-    
         return parts if parts else [condition]
-
     
     def _resolve_tables(self, tables: Set[str]) -> Set[str]:
         """Convert a set of aliases into their underlying table names"""
@@ -408,7 +402,6 @@ class QueryOptimizer:
         child = node.left
 
         # If the child is also a SELECT, try to push that child down first
-        # so that the whole chain can move toward base relations / × nodes.
         if child and child.node_type == NodeType.SELECT:
             node.left = self._push_selection_down(child)
             return node
@@ -425,8 +418,8 @@ class QueryOptimizer:
             left_tables = self._get_node_tables(child.left)
             right_tables = self._get_node_tables(child.right)
             
-            # Rule #4 Pre-check: If the condition references tables on BOTH sides of a CARTESIAN, 
-            # it must remain here to be converted by Rule #4.
+            # If the condition references tables on BOTH sides of a CARTESIAN,
+            # it must remain here to be converted by Rule 4.
             is_join_condition = (
                 referenced_tables.issubset(left_tables.union(right_tables)) and
                 not referenced_tables.issubset(left_tables) and
@@ -434,7 +427,6 @@ class QueryOptimizer:
             )
             
             if is_join_condition and child.node_type == NodeType.CARTESIAN:
-                # Leave this selection here, so Rule 4 sees σ(condition) over ×
                 return node
             
             # Can push to left?
@@ -443,17 +435,44 @@ class QueryOptimizer:
                 child.left = self._push_selection_down(node)
                 return child
             
-            # Can push to right? (use resolved table names here as well)
+            # Can push to right?
             if referenced_tables.issubset(right_tables):
                 node.left = child.right
                 child.right = self._push_selection_down(node)
                 return child
             
         return node
+
+    def _has_top_level_or(self, expr: str) -> bool:
+        """Return True if expr has a top-level OR (not inside parentheses)."""
+        paren_depth = 0
+        i = 0
+        n = len(expr)
+        while i < n:
+            ch = expr[i]
+            if ch == '(':
+                paren_depth += 1
+            elif ch == ')':
+                paren_depth -= 1
+
+            if paren_depth == 0 and i + 2 <= n:
+                chunk = expr[i:i+2].upper()
+                if chunk == 'OR':
+                    before_ok = (i == 0) or expr[i-1].isspace() or expr[i-1] in ')'
+                    after_ok = (i + 2 == n) or expr[i+2].isspace() or expr[i+2] in '('
+                    if before_ok and after_ok:
+                        return True
+            i += 1
+        return False
+
+    def _selectivity_key(self, node: QueryNode) -> float:
+        """Helper for sorting without using lambda."""
+        return node.selectivity
     
     def _order_by_selectivity(self, node: QueryNode) -> QueryNode:
         """Rule 3: Order selections by selectivity"""
-        if node is None: return None
+        if node is None:
+            return None
         
         # Only reorder WHERE clauses (SELECT)
         if node.node_type == NodeType.SELECT:
@@ -464,8 +483,14 @@ class QueryOptimizer:
                 current = current.left
                 
             if len(selections) > 1:
-                # Sort by selectivity (lower score = higher selectivity)
-                selections.sort(key=lambda n: n.selectivity)
+                # If ANY selection in the chain has a top-level OR, skip Rule 3
+                if any(self._has_top_level_or(sel.data) for sel in selections):
+                    # Just recurse below the chain
+                    selections[-1].left = self._order_by_selectivity(current)
+                    return node
+
+                # Otherwise, safe to reorder by selectivity
+                selections.sort(key=self._selectivity_key)
                 self.optimizations_applied.append("Rule #3: Ordered selections by selectivity")
                 
                 # Re-link chain
@@ -484,7 +509,8 @@ class QueryOptimizer:
     
     def _cartesian_to_join(self, node: QueryNode) -> QueryNode:
         """Rule 4: Convert Cartesian product + selection to join"""
-        if node is None: return None
+        if node is None:
+            return None
         
         # Pattern: SELECT over CARTESIAN
         if (node.node_type == NodeType.SELECT and 
@@ -511,7 +537,8 @@ class QueryOptimizer:
     
     def _push_projections(self, node: QueryNode) -> QueryNode:
         """Rule 5: Push projections down"""
-        if node is None: return None
+        if node is None:
+            return None
         if node.node_type == NodeType.PROJECT:
             self.optimizations_applied.append("Rule #5: Pushed projections down")
         node.left = self._push_projections(node.left)
@@ -519,7 +546,8 @@ class QueryOptimizer:
         return node
     
     def _unnest_subqueries(self, node: QueryNode) -> QueryNode:
-        if node is None: return None
+        if node is None:
+            return None
         if node.node_type == NodeType.SELECT:
             if re.search(r'\bIN\s*\(\s*SELECT', node.data, re.IGNORECASE):
                 self.optimizations_applied.append("Extra Credit: Converted IN subquery to semi-join (⋉)")
@@ -534,10 +562,9 @@ class QueryOptimizer:
         
         # Check for Equality on a Key (Highest Selectivity)
         if '=' in condition:
-            # Check for common key attribute names (simplified schema check)
             if any(k in condition.upper() for k in ['SSN', 'NUMBER', 'PNO', 'ESSN', 'DNUM']):
-                return 0.05 # Primary/Unique Key lookup
-            return 0.2    # General Equality
+                return 0.05  # Primary/Unique Key lookup
+            return 0.2      # General Equality
         
         # Check for Range/Inequality
         if any(op in condition for op in ['>', '<', '>=', '<=', '!=']): 
@@ -553,7 +580,8 @@ class QueryOptimizer:
     
     def _get_node_tables(self, node: QueryNode) -> Set[str]:
         """Get all table names in a subtree (resolved names)"""
-        if node is None: return set()
+        if node is None:
+            return set()
         tables = set()
         if node.node_type == NodeType.RELATION:
             tables.add(node.data)
@@ -563,7 +591,8 @@ class QueryOptimizer:
     
     def _is_join_condition(self, condition: str) -> bool:
         """Check if condition is a join condition (references >= 2 distinct tables/aliases)"""
-        if '=' not in condition: return False
+        if '=' not in condition:
+            return False
         refs = self._get_referenced_tables(condition)
         return len(refs) >= 2
 
@@ -579,13 +608,16 @@ def load_schema_from_file(content: str) -> Dict[str, Dict]:
         for line in lines:
             if 'PRIMARY KEY' in line.upper():
                 m = re.search(r'PRIMARY KEY\s*\(\s*(\w+)', line, re.IGNORECASE)
-                if m: schema[table_name]['primary_key'].append(m.group(1))
+                if m:
+                    schema[table_name]['primary_key'].append(m.group(1))
             elif 'UNIQUE' in line.upper():
                 m = re.search(r'UNIQUE\s*\(\s*(\w+)', line, re.IGNORECASE)
-                if m: schema[table_name]['unique'].append(m.group(1))
+                if m:
+                    schema[table_name]['unique'].append(m.group(1))
             else:
                 m = re.match(r'(\w+)', line)
-                if m: schema[table_name]['attributes'].append(m.group(1))
+                if m:
+                    schema[table_name]['attributes'].append(m.group(1))
     return schema
 
 def process_query_file(filename: str):
@@ -642,9 +674,5 @@ if __name__ == "__main__":
         for filename in sys.argv[1:]:
             process_query_file(filename)
     else:
-        # Example command if run directly without arguments: python script.py input1.txt
-        # If running from a notebook or environment without sys.argv, you'll need to call process_query_file manually.
         print("Usage: python script_name.py <input_file1.txt> [input_file2.txt ...]")
-        # Example for testing if you have the file locally:
-        # if os.path.exists('input1.txt'):
-        #     process_query_file('input1.txt')
+        # If running interactively, you can call process_query_file manually.
