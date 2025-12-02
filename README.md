@@ -1,4 +1,4 @@
-# README File: Include a short README.txt or README.md that contains: 
+# Heuristic Query Optimization
 ## Compilation & Execution Instructions 
 ## Commands or steps needed to build and run your program. 
 ## Any external libraries, tools, or dependencies required. 
