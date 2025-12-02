@@ -2,38 +2,35 @@ import re
 import os
 import sys
 from dataclasses import dataclass, field
-from typing import List, Dict, Set, Optional
-from enum import Enum
 
-class NodeType(Enum):
-    """Types of nodes in the query tree"""
-    PROJECT = "π"  # Projection (Rule 5)
-    SELECT = "σ"   # Selection (WHERE) (Rules 1, 2, 3, 4)
-    HAVING = "σ_having" # Selection (HAVING) (Only Rule 5 applies to this structure)
-    JOIN = "⋈"     # Join (Rule 4 result)
-    SEMI_JOIN = "⋉"  # Semi-join
-    ANTI_JOIN = "▷"  # Anti-join
-    OUTER_JOIN = "⟕"  # Outer join
-    CARTESIAN = "×"  # Cartesian product
-    RELATION = "R"   # Base relation
-    GROUP = "γ"      # Group by
-    SORT = "τ"       # Order by
+# Node type symbols (no Enum)
+PROJECT = "π"        # Projection (Rule 5)
+SELECT = "σ"         # Selection (WHERE)
+HAVING = "σ_having"  # Selection (HAVING)
+JOIN = "⋈"           # Join
+SEMI_JOIN = "⋉"      # Semi-join
+ANTI_JOIN = "▷"      # Anti-join
+OUTER_JOIN = "⟕"     # Outer join
+CARTESIAN = "×"      # Cartesian product
+RELATION = "R"       # Base relation
+GROUP = "γ"          # Group by
+SORT = "τ"           # Order by
 
 @dataclass
 class QueryNode:
     """Node in the query tree"""
-    node_type: NodeType
+    node_type: str
     data: str = ""
-    left: Optional['QueryNode'] = None
-    right: Optional['QueryNode'] = None
-    attributes: List[str] = field(default_factory=list)
+    left: 'QueryNode' = None
+    right: 'QueryNode' = None
+    attributes: list = field(default_factory=list)
     join_condition: str = ""
     selectivity: float = 1.0
     
     def __str__(self, level=0):
         """String representation with indentation"""
         indent = "  " * level
-        result = f"{indent}{self.node_type.value}"
+        result = f"{indent}{self.node_type}"
         
         if self.data:
             result += f"_{self.data}"
@@ -52,7 +49,7 @@ class QueryNode:
 class SQLParser:
     """Parse SQL queries into components"""
     
-    def __init__(self, query: str, schema: Dict[str, Dict]):
+    def __init__(self, query, schema):
         self.query = self._normalize_query(query)
         self.schema = schema
         self.select_clause = ""
@@ -63,17 +60,17 @@ class SQLParser:
         self.order_by_clause = ""
         self.table_aliases = {}
         
-    def _normalize_query(self, query: str) -> str:
+    def _normalize_query(self, query):
         """Normalize SQL query"""
         # Remove comments
-        query = re.sub(r'--.*$', '', query, flags=re.MULTILINE)
+        query = re.sub(r'--.*?$', '', query, flags=re.MULTILINE)
         # Handle smart quotes
         query = query.replace('‘', "'").replace('’', "'").replace('“', '"').replace('”', '"')
         # Remove extra whitespace (newlines -> space)
         query = re.sub(r'\s+', ' ', query)
         return query.strip()
     
-    def parse(self) -> Dict:
+    def parse(self):
         """Parse the SQL query into components"""
         query = self.query
         
@@ -157,48 +154,47 @@ class SQLParser:
 class QueryTreeBuilder:
     """Build canonical and optimized query trees"""
     
-    def __init__(self, parsed_query: Dict, schema: Dict[str, Dict]):
+    def __init__(self, parsed_query, schema):
         self.parsed = parsed_query
         self.schema = schema
         self.aliases = parsed_query['aliases']
         
-    def build_canonical_tree(self) -> QueryNode:
+    def build_canonical_tree(self):
         """Build the canonical (unoptimized) query tree"""
         root = self._build_from_tree()
         
         # Add WHERE clause (selections)
         if self.parsed['where']:
-            select_node = QueryNode(NodeType.SELECT, self.parsed['where'])
+            select_node = QueryNode(SELECT, self.parsed['where'])
             select_node.left = root
             root = select_node
         
         # Add GROUP BY
         if self.parsed['group_by']:
-            group_node = QueryNode(NodeType.GROUP, self.parsed['group_by'])
+            group_node = QueryNode(GROUP, self.parsed['group_by'])
             group_node.left = root
             root = group_node
             
             if self.parsed['having']:
-                # IMPORTANT: Use NodeType.HAVING to distinguish from WHERE
-                having_node = QueryNode(NodeType.HAVING, f"{self.parsed['having']}")
+                having_node = QueryNode(HAVING, f"{self.parsed['having']}")
                 having_node.left = root
                 root = having_node
         
         # Add projection
         if self.parsed['select'] != '*':
-            proj_node = QueryNode(NodeType.PROJECT, self.parsed['select'])
+            proj_node = QueryNode(PROJECT, self.parsed['select'])
             proj_node.left = root
             root = proj_node
         
         # Add ORDER BY
         if self.parsed['order_by']:
-            sort_node = QueryNode(NodeType.SORT, self.parsed['order_by'])
+            sort_node = QueryNode(SORT, self.parsed['order_by'])
             sort_node.left = root
             root = sort_node
         
         return root
     
-    def _build_from_tree(self) -> QueryNode:
+    def _build_from_tree(self):
         """Build tree from FROM clause"""
         from_clause = self.parsed['from']
         joins = self._parse_joins(from_clause)
@@ -207,25 +203,23 @@ class QueryTreeBuilder:
             # Single table
             raw = from_clause.split()[0]
             table_name = self.aliases.get(raw, raw) 
-            return QueryNode(NodeType.RELATION, table_name)
+            return QueryNode(RELATION, table_name)
         
         # Build join tree
         root = None
         for join in joins:
             if root is None:
-                root = QueryNode(NodeType.RELATION, join['left_table'])
+                root = QueryNode(RELATION, join['left_table'])
             
-            right_node = QueryNode(NodeType.RELATION, join['right_table'])
+            right_node = QueryNode(RELATION, join['right_table'])
             
             join_type = join['type']
             if 'OUTER' in join_type:
-                join_node = QueryNode(NodeType.OUTER_JOIN, join_type, 
-                                     join_condition=join['condition'])
+                join_node = QueryNode(OUTER_JOIN, join_type, join_condition=join['condition'])
             elif join_type == 'CARTESIAN':
-                join_node = QueryNode(NodeType.CARTESIAN, "")
+                join_node = QueryNode(CARTESIAN, "")
             else:
-                join_node = QueryNode(NodeType.JOIN, join_type,
-                                     join_condition=join['condition'])
+                join_node = QueryNode(JOIN, join_type, join_condition=join['condition'])
             
             join_node.left = root
             join_node.right = right_node
@@ -233,7 +227,7 @@ class QueryTreeBuilder:
         
         return root
     
-    def _parse_joins(self, from_clause: str) -> List[Dict]:
+    def _parse_joins(self, from_clause):
         """Parse join operations from FROM clause"""
         joins = []
         
@@ -276,12 +270,12 @@ class QueryTreeBuilder:
 class QueryOptimizer:
     """Apply heuristic optimization rules"""
     
-    def __init__(self, schema: Dict[str, Dict], aliases: Dict[str, str]):
+    def __init__(self, schema, aliases):
         self.schema = schema
         self.aliases = aliases
         self.optimizations_applied = []
         
-    def optimize(self, root: QueryNode) -> QueryNode:
+    def optimize(self, root):
         """Apply all optimization rules in the correct sequence."""
         self.optimizations_applied = []
         
@@ -302,13 +296,12 @@ class QueryOptimizer:
         
         return root
     
-    def _break_and_push_selections(self, node: QueryNode) -> QueryNode:
+    def _break_and_push_selections(self, node):
         """Rule 1 & 2: Break conjunctive selections and push them down"""
         if node is None:
             return None
         
-        # Rule 1/2 only apply to WHERE (NodeType.SELECT)
-        if node.node_type == NodeType.SELECT:
+        if node.node_type == SELECT:
             conditions = self._split_conditions(node.data)
             
             if len(conditions) > 1:
@@ -316,38 +309,29 @@ class QueryOptimizer:
                     "Rule #1: Split conjunctive selections into individual operations"
                 )
             
-            # Build chain
             current = node.left
             for condition in reversed(conditions):
-                select_node = QueryNode(NodeType.SELECT, condition)
+                select_node = QueryNode(SELECT, condition)
                 select_node.selectivity = self._estimate_selectivity(condition)
                 select_node.left = current
                 current = select_node
             
-            # Push down the entire chain
             result = self._push_selection_down(current)
             
-            # Record Rule 2 (if a selection was created/pushed)
             if len(conditions) > 0:
-                 self.optimizations_applied.append(
+                self.optimizations_applied.append(
                     "Rule #2: Pushed selections down to base relations"
-                 )
+                )
             
             return result
         
-        # Recursive call for other nodes
         node.left = self._break_and_push_selections(node.left)
         node.right = self._break_and_push_selections(node.right)
         
         return node
     
-    def _split_conditions(self, condition: str) -> List[str]:
-        """
-        Rule 1: Split AND-connected conditions at the top level.
-
-        We still split on top-level AND even if there are ORs elsewhere
-        (only avoid splitting inside parentheses).
-        """
+    def _split_conditions(self, condition):
+        """Split top-level ANDs, even if there are ORs elsewhere."""
         parts = []
         current = ""
         paren_depth = 0
@@ -361,10 +345,9 @@ class QueryOptimizer:
             elif char == ')':
                 paren_depth -= 1
             
-            # Check for top-level AND
             is_and = False
             if paren_depth == 0 and i + 3 <= n:
-                chunk = condition[i:i+3].upper()  # "AND"
+                chunk = condition[i:i+3].upper()
                 if chunk == 'AND':
                     before_ok = (i == 0) or condition[i-1].isspace() or condition[i-1] in ')'
                     after_ok = (i + 3 == n) or condition[i+3].isspace() or condition[i+3] in '('
@@ -375,7 +358,7 @@ class QueryOptimizer:
                 if current.strip():
                     parts.append(current.strip())
                 current = ""
-                i += 3  # skip "AND"
+                i += 3
                 while i < n and condition[i].isspace():
                     i += 1
                 continue
@@ -387,55 +370,48 @@ class QueryOptimizer:
             parts.append(current.strip())
         return parts if parts else [condition]
     
-    def _resolve_tables(self, tables: Set[str]) -> Set[str]:
+    def _resolve_tables(self, tables):
         """Convert a set of aliases into their underlying table names"""
         resolved = set()
         for t in tables:
             resolved.add(self.aliases.get(t, t))
         return resolved
 
-    def _push_selection_down(self, node: QueryNode) -> QueryNode:
+    def _push_selection_down(self, node):
         """Rule 2: Push a selection node down the tree"""
-        if node is None or node.node_type != NodeType.SELECT:
+        if node is None or node.node_type != SELECT:
             return node
         
         child = node.left
 
-        # If the child is also a SELECT, try to push that child down first
-        if child and child.node_type == NodeType.SELECT:
+        if child and child.node_type == SELECT:
             node.left = self._push_selection_down(child)
             return node
         
-        # Stop at GROUP BY, HAVING, or Outer Joins
-        if child and child.node_type in [NodeType.GROUP, NodeType.HAVING, NodeType.OUTER_JOIN]:
+        if child and child.node_type in [GROUP, HAVING, OUTER_JOIN]:
             return node
         
-        # Try to push through JOINs and CARTESIANs
-        if child and child.node_type in [NodeType.JOIN, NodeType.CARTESIAN]:
+        if child and child.node_type in [JOIN, CARTESIAN]:
             referenced_aliases = self._get_referenced_tables(node.data)
             referenced_tables = self._resolve_tables(referenced_aliases)
             
             left_tables = self._get_node_tables(child.left)
             right_tables = self._get_node_tables(child.right)
             
-            # If the condition references tables on BOTH sides of a CARTESIAN,
-            # it must remain here to be converted by Rule 4.
             is_join_condition = (
                 referenced_tables.issubset(left_tables.union(right_tables)) and
                 not referenced_tables.issubset(left_tables) and
                 not referenced_tables.issubset(right_tables)
             )
             
-            if is_join_condition and child.node_type == NodeType.CARTESIAN:
+            if is_join_condition and child.node_type == CARTESIAN:
                 return node
             
-            # Can push to left?
             if referenced_tables.issubset(left_tables):
                 node.left = child.left
                 child.left = self._push_selection_down(node)
                 return child
             
-            # Can push to right?
             if referenced_tables.issubset(right_tables):
                 node.left = child.right
                 child.right = self._push_selection_down(node)
@@ -443,7 +419,7 @@ class QueryOptimizer:
             
         return node
 
-    def _has_top_level_or(self, expr: str) -> bool:
+    def _has_top_level_or(self, expr):
         """Return True if expr has a top-level OR (not inside parentheses)."""
         paren_depth = 0
         i = 0
@@ -465,41 +441,36 @@ class QueryOptimizer:
             i += 1
         return False
 
-    def _selectivity_key(self, node: QueryNode) -> float:
-        """Helper for sorting without using lambda."""
+    def _selectivity_key(self, node):
+        """Helper for sorting by selectivity."""
         return node.selectivity
     
-    def _order_by_selectivity(self, node: QueryNode) -> QueryNode:
+    def _order_by_selectivity(self, node):
         """Rule 3: Order selections by selectivity"""
         if node is None:
             return None
         
-        # Only reorder WHERE clauses (SELECT)
-        if node.node_type == NodeType.SELECT:
+        if node.node_type == SELECT:
             selections = []
             current = node
-            while current and current.node_type == NodeType.SELECT:
+            while current and current.node_type == SELECT:
                 selections.append(current)
                 current = current.left
                 
             if len(selections) > 1:
-                # If ANY selection in the chain has a top-level OR, skip Rule 3
+                # Skip Rule 3 if any selection has a top-level OR (input2 case)
                 if any(self._has_top_level_or(sel.data) for sel in selections):
-                    # Just recurse below the chain
                     selections[-1].left = self._order_by_selectivity(current)
                     return node
 
-                # Otherwise, safe to reorder by selectivity
                 selections.sort(key=self._selectivity_key)
                 self.optimizations_applied.append("Rule #3: Ordered selections by selectivity")
                 
-                # Re-link chain
                 root = selections[0]
                 for i in range(len(selections) - 1):
                     selections[i].left = selections[i+1]
                 selections[-1].left = current
                 
-                # Continue recursion below the chain
                 selections[-1].left = self._order_by_selectivity(current)
                 return root
         
@@ -507,25 +478,22 @@ class QueryOptimizer:
         node.right = self._order_by_selectivity(node.right)
         return node
     
-    def _cartesian_to_join(self, node: QueryNode) -> QueryNode:
+    def _cartesian_to_join(self, node):
         """Rule 4: Convert Cartesian product + selection to join"""
         if node is None:
             return None
         
-        # Pattern: SELECT over CARTESIAN
-        if (node.node_type == NodeType.SELECT and 
-            node.left and node.left.node_type == NodeType.CARTESIAN):
+        if (node.node_type == SELECT and 
+            node.left and node.left.node_type == CARTESIAN):
             
-            # Check if the selection is a valid join condition
             if self._is_join_condition(node.data):
                 cartesian = node.left
-                join_node = QueryNode(NodeType.JOIN, "INNER JOIN",
-                                     join_condition=node.data)
+                join_node = QueryNode(JOIN, "INNER JOIN", join_condition=node.data)
                 join_node.left = cartesian.left
                 join_node.right = cartesian.right
                 
                 self.optimizations_applied.append(
-                    f"Rule #4: Converted Cartesian product + selection to JOIN on {node.data}"
+                    "Rule #4: Converted Cartesian product + selection to JOIN on " + node.data
                 )
                 
                 return self._cartesian_to_join(join_node)
@@ -535,20 +503,20 @@ class QueryOptimizer:
         
         return node
     
-    def _push_projections(self, node: QueryNode) -> QueryNode:
+    def _push_projections(self, node):
         """Rule 5: Push projections down"""
         if node is None:
             return None
-        if node.node_type == NodeType.PROJECT:
+        if node.node_type == PROJECT:
             self.optimizations_applied.append("Rule #5: Pushed projections down")
         node.left = self._push_projections(node.left)
         node.right = self._push_projections(node.right)
         return node
     
-    def _unnest_subqueries(self, node: QueryNode) -> QueryNode:
+    def _unnest_subqueries(self, node):
         if node is None:
             return None
-        if node.node_type == NodeType.SELECT:
+        if node.node_type == SELECT:
             if re.search(r'\bIN\s*\(\s*SELECT', node.data, re.IGNORECASE):
                 self.optimizations_applied.append("Extra Credit: Converted IN subquery to semi-join (⋉)")
             if re.search(r'\bNOT\s+IN|\bNOT\s+EXISTS', node.data, re.IGNORECASE):
@@ -557,48 +525,40 @@ class QueryOptimizer:
         node.right = self._unnest_subqueries(node.right)
         return node
     
-    def _estimate_selectivity(self, condition: str) -> float:
-        """Rule 3 Helper: Estimate selectivity based on qualitative reasoning"""
-        
-        # Check for Equality on a Key (Highest Selectivity)
+    def _estimate_selectivity(self, condition):
+        """Estimate selectivity"""
         if '=' in condition:
             if any(k in condition.upper() for k in ['SSN', 'NUMBER', 'PNO', 'ESSN', 'DNUM']):
-                return 0.05  # Primary/Unique Key lookup
-            return 0.2      # General Equality
-        
-        # Check for Range/Inequality
+                return 0.05
+            return 0.2
         if any(op in condition for op in ['>', '<', '>=', '<=', '!=']): 
             return 0.33
-        
-        # Default/Other
         return 0.5
 
-    def _get_referenced_tables(self, condition: str) -> Set[str]:
+    def _get_referenced_tables(self, condition):
         """Get aliases referenced in a condition"""
         matches = re.findall(r'([A-Za-z_]\w*)\.\w+', condition)
         return set(matches)
     
-    def _get_node_tables(self, node: QueryNode) -> Set[str]:
+    def _get_node_tables(self, node):
         """Get all table names in a subtree (resolved names)"""
         if node is None:
             return set()
         tables = set()
-        if node.node_type == NodeType.RELATION:
+        if node.node_type == RELATION:
             tables.add(node.data)
         tables.update(self._get_node_tables(node.left))
         tables.update(self._get_node_tables(node.right))
         return tables
     
-    def _is_join_condition(self, condition: str) -> bool:
-        """Check if condition is a join condition (references >= 2 distinct tables/aliases)"""
+    def _is_join_condition(self, condition):
+        """Check if condition is a join condition"""
         if '=' not in condition:
             return False
         refs = self._get_referenced_tables(condition)
         return len(refs) >= 2
 
-# --- Execution and Schema Loading Functions ---
-
-def load_schema_from_file(content: str) -> Dict[str, Dict]:
+def load_schema_from_file(content):
     schema = {}
     table_pattern = r'(\w+)\s*\((.*?)\);'
     matches = re.findall(table_pattern, content, re.DOTALL | re.IGNORECASE)
@@ -620,7 +580,7 @@ def load_schema_from_file(content: str) -> Dict[str, Dict]:
                     schema[table_name]['attributes'].append(m.group(1))
     return schema
 
-def process_query_file(filename: str):
+def process_query_file(filename):
     try:
         with open(filename, 'r', encoding='utf-8') as f:
             content = f.read()
@@ -675,4 +635,3 @@ if __name__ == "__main__":
             process_query_file(filename)
     else:
         print("Usage: python script_name.py <input_file1.txt> [input_file2.txt ...]")
-        # If running interactively, you can call process_query_file manually.
