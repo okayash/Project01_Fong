@@ -42,6 +42,18 @@ Each attribute is seperated by a comma and new line.
 
 ### Query Structure
 Each query ends with ;.
+The SQL syntax supported include:
+SELECT using lists and aggregation
+FROM using simple tables, alias, joins (inner, left-outer, right-outer, full-outer, anti-, semi-)
+WHERE
+GROUP BY
+HAVING
+ORDER BY
+
+Unnesting Rules:
+IN/EXISTS
+NOT IN/NOT EXISTS
+
 
 # Output Description 
 ## What files or console outputs are generated.
@@ -50,3 +62,6 @@ The console output will then generate a canonical query tree, optimized query tr
 ## How to interpret the output (e.g., structure of the query tree, optimization steps). 
 The output will initally show your input SQL query from the .txt file provided.
 Then, a canonical query tree is created 
+The optimized query tree
+an SQL query with refinements
+and a description of the rules applied
