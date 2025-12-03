@@ -4,16 +4,25 @@
 
 ## Commands or steps needed to build and run your program. 
 ## Any external libraries, tools, or dependencies required. 
+
 Python Libraries:
+
 re - Regular Expression Operators
+
 os - Operating System Interfaces
+
 sys - System Parameters and Functions
+
+To execute the program, use the following commands:
+
+For console output: python3 Project1/optimizer.py  [filename].txt
+
+To store output into a text file: python3 Project1/optimizer.py [filename].txt > output.txt
+
 
 # Input Requirements 
 ## Expected input format (e.g., SQL query text file, command-line input).
-Inputs must be an SQL query text file.
-First, there must be a schema definition portion in SQL.
-Then, an SQL query ending with ;.
+Inputs must be an SQL query text file with schema definitions containing attributes, followed by SQL queries.
 
 ## Any assumptions about schema names, attributes, or query structure. 
 Assumptions: 
