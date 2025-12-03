@@ -1,13 +1,12 @@
 import re
 import os
 import sys
-from dataclasses import dataclass, field
 
 # Node type symbols (no Enum)
 PROJECT = "π"        # Projection (Rule 5)
 SELECT = "σ"         # Selection (WHERE)
 HAVING = "σ_having"  # Selection (HAVING)
-JOIN = "⋈"           # Join
+JOIN = "⋈"           # daaJoin
 SEMI_JOIN = "⋉"      # Semi-join
 ANTI_JOIN = "▷"      # Anti-join
 OUTER_JOIN = "⟕"     # Outer join
@@ -16,19 +15,26 @@ RELATION = "R"       # Base relation
 GROUP = "γ"          # Group by
 SORT = "τ"           # Order by
 
-@dataclass
 class QueryNode:
-    """Node in the query tree"""
-    node_type: str
-    data: str = ""
-    left: 'QueryNode' = None
-    right: 'QueryNode' = None
-    attributes: list = field(default_factory=list)
-    join_condition: str = ""
-    selectivity: float = 1.0
-    
+    def __init__(
+        self,
+        node_type,
+        data="",
+        left=None,
+        right=None,
+        attributes=None,
+        join_condition="",
+        selectivity=1.0
+    ):
+        self.node_type = node_type
+        self.data = data
+        self.left = left
+        self.right = right
+        self.attributes = attributes if attributes is not None else []
+        self.join_condition = join_condition
+        self.selectivity = selectivity
+
     def __str__(self, level=0):
-        """String representation with indentation"""
         indent = "  " * level
         result = f"{indent}{self.node_type}"
         
