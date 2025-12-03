@@ -813,4 +813,4 @@ if __name__ == "__main__":
         for filename in sys.argv[1:]:
             process_query_file(filename)
     else:
-        print("Usage: python script_name.py <input_file1.txt> [input_file2.txt ...]")
+        print("Please run with command: python3 Project1/optimizer.py input.txt")
