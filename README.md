@@ -43,15 +43,24 @@ Each attribute is seperated by a comma and new line.
 ### Query Structure
 Each query ends with ;.
 The SQL syntax supported include:
+
 SELECT using lists and aggregation
+
 FROM using simple tables, alias, joins (inner, left-outer, right-outer, full-outer, anti-, semi-)
+
 WHERE
+
 GROUP BY
+
 HAVING
+
 ORDER BY
 
+
 Unnesting Rules:
+
 IN/EXISTS
+
 NOT IN/NOT EXISTS
 
 
