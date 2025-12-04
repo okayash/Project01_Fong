@@ -6,15 +6,17 @@ San Yeung
 
 '''
 
+# Contains unnesting rules with semi/anti-join and also converts optimized query tree to SQL.
+
 '''
-Python Standard Libraries
+Python Standard Libraries:
 '''
 import re
 import os
 import sys
 
 '''
-Constants representing SQL operations that will appear in final trees.
+Constant symbols/phrases representing SQL operations that will appear in final trees.
 '''
 PROJECT = "π"
 SELECT = "σ"
@@ -66,7 +68,7 @@ class QueryNode:
         if self.join_condition:
             result += f" [{self.join_condition}]" # add join condition if it's a join.
         
-        result += "\n" # new line
+        result += "\n" # add new line
         
         if self.left:
             result += self.left.__str__(level + 1) # print the lower query tree of the left child
@@ -214,115 +216,162 @@ class QueryTreeBuilder:
         self.aliases = parsed_query['aliases']
         
     def build_canonical_tree(self):
-        """Build the canonical (unoptimized) query tree"""
+        '''
+        Purpose: To build the canonical tree from the inital SQL query with no optimizations.
+        '''
+
+        # we build starting from FROM clause to put relation tables at the bottom of the tree
         root = self._build_from_tree()
         
-        # Add WHERE clause (selections)
-        if self.parsed['where']:
-            select_node = QueryNode(SELECT, self.parsed['where'])
-            select_node.left = root
-            root = select_node
+        # WHERE goes on top of FROM in tree
+        if self.parsed['where']: # does SQL have where
+            select_node = QueryNode(SELECT, self.parsed['where']) # create a node for this where 
+            select_node.left = root # attaches tree to root
+            root = select_node # root is now where node
         
-        # Add GROUP BY
-        if self.parsed['group_by']:
-            group_node = QueryNode(GROUP, self.parsed['group_by'])
-            group_node.left = root
-            root = group_node
-            
-            if self.parsed['having']:
-                having_node = QueryNode(HAVING, f"{self.parsed['having']}")
-                having_node.left = root
-                root = having_node
+        # GROUP BY is next on tree
+        if self.parsed['group_by']: # SQL has group by?
+            group_node = QueryNode(GROUP, self.parsed['group_by']) # create group by node
+            group_node.left = root # attach tree to root
+            root = group_node # root is now group by node
+
+            # HAVING is above     
+            if self.parsed['having']: # SQL has having?
+                having_node = QueryNode(HAVING, f"{self.parsed['having']}") # create having node
+                having_node.left = root # attach tree to root
+                root = having_node # root is now having node
         
         # Add projection
-        if self.parsed['select'] != '*':
-            proj_node = QueryNode(PROJECT, self.parsed['select'])
-            proj_node.left = root
-            root = proj_node
+        if self.parsed['select'] != '*': # if SQL select is not *
+            proj_node = QueryNode(PROJECT, self.parsed['select']) # create projection node
+            proj_node.left = root # attach tree to root
+            root = proj_node # root is now projection node
         
-        # Add ORDER BY
-        if self.parsed['order_by']:
-            sort_node = QueryNode(SORT, self.parsed['order_by'])
-            sort_node.left = root
-            root = sort_node
+        # ORDER_BY on top of tree
+        if self.parsed['order_by']: # check if SQL order by exists
+            sort_node = QueryNode(SORT, self.parsed['order_by']) # create sort node
+            sort_node.left = root # attach tree to root
+            root = sort_node # root is now sort node
         
         return root
     
     def _build_from_tree(self):
-        """Build tree from FROM clause"""
-        from_clause = self.parsed['from']
-        joins = self._parse_joins(from_clause)
+        '''
+        Build a tree starting from the FROM clause
+        '''
+
+        from_clause = self.parsed['from'] # get FROM ...
+        joins = self._parse_joins(from_clause) # parse any joins in FROM
         
+        # we have no joins and are dealing with a single table:
         if not joins:
-            # Single table
-            raw = from_clause.split()[0]
-            table_name = self.aliases.get(raw, raw) 
-            return QueryNode(RELATION, table_name)
+            raw = from_clause.split()[0] # get table name
+            table_name = self.aliases.get(raw, raw) # obtain alias if necessary
+            return QueryNode(RELATION, table_name) # create relation node
         
-        # Build join tree
+        # we have JOINS to process:
+
         root = None
+
+        # each 'join' in joins becomes left_table, right_table
         for join in joins:
             if root is None:
                 root = QueryNode(RELATION, join['left_table'])
             
+            # node for RHS table
             right_node = QueryNode(RELATION, join['right_table'])
             
-            join_type = join['type']
-            if 'OUTER' in join_type:
+            
+            join_type = join['type'] # check join type
+            if 'OUTER' in join_type: # for outer joins
                 join_node = QueryNode(OUTER_JOIN, join_type, join_condition=join['condition'])
-            elif join_type == 'CARTESIAN':
+            elif join_type == 'CARTESIAN': # for cartesian products
                 join_node = QueryNode(CARTESIAN, "")
-            else:
+            else: # assuming inner join is default ... 
                 join_node = QueryNode(JOIN, join_type, join_condition=join['condition'])
             
-            join_node.left = root
-            join_node.right = right_node
-            root = join_node
+            join_node.left = root # attach exisiting tree on LHS
+            join_node.right = right_node # attach right node
+            root = join_node # JOIN is now on the root
         
         return root
     
     def _parse_joins(self, from_clause):
-        """Parse join operations from FROM clause"""
+        '''
+
+        parse JOIN in FROM into dictionary format
+
+        '''
         joins = []
         
-        # Check for explicit JOIN syntax
-        if re.search(r'\s+JOIN\s+', from_clause, re.IGNORECASE):
+        # checking for JOIN ... 
+        if re.search(r'\s+JOIN\s+', from_clause, re.IGNORECASE): # searching for JOIN keyword
+            # check for LHS (potential alias LHS) JOIN of types (inner/outer LEFT/RIGHT/FULL) RHS (potential alias of RHS)... 
             join_pattern = r'(\w+)\s+(\w+)\s+((?:INNER\s+|LEFT\s+OUTER\s+|RIGHT\s+OUTER\s+|FULL\s+OUTER\s+)?JOIN)\s+(\w+)\s+(\w+)\s+ON\s+([^,]+?)(?=(?:INNER|LEFT|RIGHT|FULL|$))'
-            matches = list(re.finditer(join_pattern, from_clause, re.IGNORECASE))
+            matches = list(re.finditer(join_pattern, from_clause, re.IGNORECASE)) 
+
+            # for each match found, we store the join information in a dictionary
             for i, match in enumerate(matches):
-                left_table = match.group(1) if i == 0 else joins[-1]['right_table']
-                left_alias = match.group(2) if i == 0 else joins[-1]['right_alias']
-                joins.append({
-                    'left_table': left_table, 'left_alias': left_alias,
+                if i == 0:
+                    left_table = match.group(1)   # if i is the first run, table is from SQL, else use right table of prev join.
+                    left_alias = match.group(2)   
+                else:
+                    left_table = joins[-1]['right_table']  # previous join's right side ("B")
+                    left_alias = joins[-1]['right_alias']  # previous join's right alias ("b"
+
+                joins.append({ # we add the left table + alias + type of join + right table + alias + join condition to a dictionary
+                    'left_table': left_table, 
+                    'left_alias': left_alias,
                     'type': match.group(3).strip().upper(),
-                    'right_table': match.group(4), 'right_alias': match.group(5),
+                    'right_table': match.group(4),
+                    'right_alias': match.group(5),
                     'condition': match.group(6).strip()
                 })
         
-        # Handle comma-separated (Cartesian product)
-        if ',' in from_clause and not joins:
-            tables = [t.strip() for t in from_clause.split(',')]
+        # check for comma separated tables (CARTESIAN PRODUCT)
+
+        if ',' in from_clause and not joins: # we split FROM by comma if no joins found
+            tables = [t.strip() for t in from_clause.split(',')] 
+
             for i in range(len(tables) - 1):
-                parts_left = tables[i].split()
-                l_table = parts_left[0]
-                l_alias = parts_left[1] if len(parts_left) > 1 else l_table
+
+                # left table ... 
+                parts_left = tables[i].split() # split left table and alias
+                l_table = parts_left[0] # obtain table name
+
+                if (len(parts_left) > 1): # obtain alias if exists
+                    l_alias = parts_left[1] # alias
+                else:
+                    l_alias = l_table # alias is table name if no alias
                 
-                parts_right = tables[i + 1].split()
-                r_table = parts_right[0]
-                r_alias = parts_right[1] if len(parts_right) > 1 else r_table
+                # right table ...
+                parts_right = tables[i + 1].split() # split right table and alias
+                r_table = parts_right[0] # obtain table name
+                if (len(parts_right) > 1): # obtain alias if exists
+                    r_alias = parts_right[1] # alias
+                else:
+                    r_alias = r_table
                 
-                joins.append({
-                    'left_table': l_table if i == 0 else joins[-1]['right_table'],
+                joins.append({ # ADD ALL OF THIS TO A DICTIONARY
+                    'left_table': l_table if i == 0 else joins[-1]['right_table'], # for the first join, the left table is the first table appearing \
+                    # for tables after, the left table is the right table of the previous join.
                     'left_alias': l_alias if i == 0 else joins[-1]['right_alias'],
                     'type': 'CARTESIAN',
-                    'right_table': r_table, 'right_alias': r_alias,
+                    'right_table': r_table, 
+                    'right_alias': r_alias,
                     'condition': ''
                 })
         
         return joins
 
 class QueryOptimizer:
-    """Apply heuristic optimization rules + extra credit unnesting"""
+
+    '''
+
+    class QueryOptimizer
+    Purpose: Store the functions that will apply the five heuristic optimization rules and the unnesting rules.
+
+    '''
     
     def __init__(self, schema, aliases):
         self.schema = schema
@@ -330,25 +379,39 @@ class QueryOptimizer:
         self.optimizations_applied = []
         
     def optimize(self, root):
-        """Apply all optimization rules in the correct sequence."""
-        self.optimizations_applied = []
+        '''
+       
+        Apply Heuristic Optimization Rules
         
-        # Rule 1 & 2: Break up conjunctive selections and push down
+        1	Cascade of Selections	Break conjunctive selection conditions into a sequence of single-condition selections.
+        2	Push Selections Down	Move selections as close as possible to the base relations to reduce intermediate results.
+        3	Apply Selections with Smallest Selectivity First	Reorder leaf nodes and attached selections so that the most restrictive (smallest selectivity) filters are applied earliest.
+        4	Replace Cartesian Product + Selection → Join	Combine cross-products followed by join conditions into a single ⋈ operator.
+        5	Push Projections Down	Apply projections early to eliminate unnecessary attributes before joins.
+      
+        '''
+        self.optimizations_applied = [] # remember which rules were applied ....
+        
+        # after each rule is applied, we print out the current status of the query tree.
+
+        # Break conjunctive selection conditions into a sequence of single-condition selections.
+        # Move selections as close as possible to the base relations to reduce intermediate results.
+
         root = self._break_and_push_selections(root)
-        print("Rule 1/2")
+        print("Rule 1 & 2")
         print(root)
 
-        # Rule 3: Order selections by selectivity 
+        # Reorder leaf nodes and attached selections so that the most restrictive (smallest selectivity) filters are applied earliest.
         root = self._order_by_selectivity(root)
         print("Rule 3")
         print(root)
 
-        # Rule 4: Replace Cartesian product + selection → Join
+        # Combine cross-products followed by join conditions into a single ⋈ operator.
         root = self._cartesian_to_join(root)
         print("Rule 4")
         print(root)
         
-        # Rule 5: Push projections down
+        # Apply projections early to eliminate unnecessary attributes before joins.
         root = self._push_projections(root)
         print("Rule 5")
         print(root)
@@ -361,14 +424,16 @@ class QueryOptimizer:
         return root
     
     def _break_and_push_selections(self, node):
-        """Rule 1 & 2: Break conjunctive selections and push them down"""
+        '''
+        Function that will break multiple selection conditions into seperate single selection conditions, and will also push selections
+        '''
         if node is None:
             return None
         
-        if node.node_type == SELECT:
+        if node.node_type == SELECT: # check the SELECT of the SQL.
             conditions = self._split_conditions(node.data)
-            
-            if len(conditions) > 1:
+
+            if len(conditions) > 1: # if there are multiple conditions, we will apply rule 1 below
                 self.optimizations_applied.append(
                     "Rule #1: Cascade of Selections"
                 )
