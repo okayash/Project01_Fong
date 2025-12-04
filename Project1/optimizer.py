@@ -891,7 +891,9 @@ class QueryOptimizer:
         return node
     
     def _get_all_relation_attributes(self, table_name):
-        """Get all attributes of a relation from schema"""
+        '''
+        attributes of a relation from schema
+        '''
         if table_name in self.schema:
             return self.schema[table_name]['attributes']
         return []
