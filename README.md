@@ -29,7 +29,7 @@ sys - System Parameters and Functions
 
 # Input Requirements 
 ## Expected input format (e.g., SQL query text file, command-line input).
-Inputs must be an SQL query text file with schema definitions containing attributes, followed by SQL queries.
+Inputs must be an SQL query text file containing only alphanumeric characters with schema definitions containing attributes, followed by SQL queries.
 
 ## Any assumptions about schema names, attributes, or query structure. 
 ### Assumptions: 
@@ -59,9 +59,9 @@ ORDER BY
 
 Unnesting Rules:
 
-IN/EXISTS
+IN
 
-NOT IN/NOT EXISTS
+NOT IN
 
 
 # Output Description 
@@ -70,7 +70,19 @@ The console output will then generate a canonical query tree, optimized query tr
 
 ## How to interpret the output (e.g., structure of the query tree, optimization steps). 
 The output will initally show your input SQL query from the .txt file provided.
-Then, a canonical query tree is created 
-The optimized query tree
-an SQL query with refinements
-and a description of the rules applied
+Then, a canonical query tree is created with:
+- tables are at the bottom as relations
+- join, group by, having, select, will be above
+- project is at the top
+Each rule applied is then output, along with the change in the query tree if applicable:
+1	Cascade of Selections	
+2	Push Selections Down	
+3	Apply Selections with Smallest Selectivity First	
+4	Replace Cartesian Product + Selection → Join	
+5	Push Projections Down	
+The optimized query tree is output, which is the final query tree after all rules have been checked and applied.
+
+an SQL query with refinements will also be output, which is the optimized query tree converted to SQL. 
+
+finally a description of the rules applied will be output.
+
