@@ -16,6 +16,10 @@ GROUP = "γ"          # Group by
 SORT = "τ"           # Order by
 
 class QueryNode:
+    '''
+    class QueryNode
+    Purpose:
+    '''
     def __init__(
         self,
         node_type,
@@ -53,7 +57,10 @@ class QueryNode:
         return result
 
 class SQLParser:
-    """Parse SQL queries into components"""
+    '''
+    class SQLParser
+    Purpose:
+    '''
     
     def __init__(self, query, schema):
         self.query = self._normalize_query(query)
@@ -67,17 +74,19 @@ class SQLParser:
         self.table_aliases = {}
         
     def _normalize_query(self, query):
-        """Normalize SQL query"""
-        # Remove comments
+        # Ignore comments in the query that start with --.
         query = re.sub(r'--.*?$', '', query, flags=re.MULTILINE)
         # Handle smart quotes
         query = query.replace('‘', "'").replace('’', "'").replace('“', '"').replace('”', '"')
-        # Remove extra whitespace (newlines -> space)
+        # Remove any new lines.
         query = re.sub(r'\s+', ' ', query)
         return query.strip()
     
     def parse(self):
-        """Parse the SQL query into components"""
+        '''
+        def parse
+        Purpose:
+        '''
         query = self.query
         
         # Extract SELECT
@@ -287,18 +296,23 @@ class QueryOptimizer:
         
         # Rule 1 & 2: Break up conjunctive selections and push down
         root = self._break_and_push_selections(root)
+        print(f'Checking Rule 1 & 2 {root}')
         
         # Rule 4: Replace Cartesian product + selection → Join
         root = self._cartesian_to_join(root)
-        
+        print(f'Checking Rule 4 {root}')
+
         # Rule 3: Order selections by selectivity 
         root = self._order_by_selectivity(root)
+        print(f'Checking Rule 3 {root}')
         
         # Rule 5: Push projections down
         root = self._push_projections(root)
+        print(f'Checking Rule 5 {root}')
         
         # Extra credit: unnest IN / NOT IN subqueries into semi/anti-joins
         root = self._unnest_subqueries(root)
+        print(f'Checking Unnest Rules {root}')
         
         return root
     
@@ -312,7 +326,7 @@ class QueryOptimizer:
             
             if len(conditions) > 1:
                 self.optimizations_applied.append(
-                    "Rule #1: Split conjunctive selections into individual operations"
+                    "Rule #1: Cascade of Selections"
                 )
             
             current = node.left
@@ -326,7 +340,7 @@ class QueryOptimizer:
             
             if len(conditions) > 0:
                 self.optimizations_applied.append(
-                    "Rule #2: Pushed selections down to base relations"
+                    "Rule #2: Push Selections Down"
                 )
             
             return result
@@ -473,7 +487,7 @@ class QueryOptimizer:
                     return node
 
                 selections.sort(key=self._selectivity_key)
-                self.optimizations_applied.append("Rule #3: Ordered selections by selectivity")
+                self.optimizations_applied.append("Rule #3: Apply Selections with Smallest Selectivity First")
                 
                 root = selections[0]
                 for i in range(len(selections) - 1):
@@ -502,7 +516,7 @@ class QueryOptimizer:
                 join_node.right = cartesian.right
                 
                 self.optimizations_applied.append(
-                    "Rule #4: Converted Cartesian product + selection to JOIN on " + node.data
+                    "Rule #4: Replace Cartesian Product + Selection → Join"
                 )
                 
                 return self._cartesian_to_join(join_node)
@@ -517,7 +531,7 @@ class QueryOptimizer:
         if node is None:
             return None
         if node.node_type == PROJECT:
-            self.optimizations_applied.append("Rule #5: Pushed projections down")
+            self.optimizations_applied.append("Rule #5: Push Projections Down")
         node.left = self._push_projections(node.left)
         node.right = self._push_projections(node.right)
         return node
@@ -775,26 +789,26 @@ def process_query_file(filename):
         print(f"Processing: {filename}")
         print(f"{'='*80}\n")
         
-        print("ORIGINAL SQL QUERY:")
+        print("SQL query:")
         print(query)
         print()
         
         builder = QueryTreeBuilder(parsed, schema)
         canonical_tree = builder.build_canonical_tree()
-        print("\nCANONICAL QUERY TREE:")
+        print("\ncanonical query tree:")
         print(canonical_tree)
         
         optimizer = QueryOptimizer(schema, parsed['aliases'])
         optimized_tree = optimizer.optimize(canonical_tree)
         
-        print("\nOPTIMIZED QUERY TREE:")
+        print("\noptimized query tree:")
         print(optimized_tree)
         
         optimized_sql = build_sql_from_tree(optimized_tree, parsed)
-        print("\nOPTIMIZED SQL QUERY:")
+        print("\nsql query with optimizations:")
         print(optimized_sql)
         
-        print("\nOPTIMIZATIONS APPLIED:")
+        print("\nrules applied:")
         seen_rules = set()
         for opt in optimizer.optimizations_applied:
             if opt not in seen_rules:
