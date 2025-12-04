@@ -388,6 +388,8 @@ class QueryOptimizer:
         3	Apply Selections with Smallest Selectivity First	Reorder leaf nodes and attached selections so that the most restrictive (smallest selectivity) filters are applied earliest.
         4	Replace Cartesian Product + Selection → Join	Combine cross-products followed by join conditions into a single ⋈ operator.
         5	Push Projections Down	Apply projections early to eliminate unnecessary attributes before joins.
+
+        call each function to check/apply each rule
       
         '''
         self.optimizations_applied = [] # remember which rules were applied ....
@@ -425,13 +427,16 @@ class QueryOptimizer:
     
     def _break_and_push_selections(self, node):
         '''
+
         Function that will break multiple selection conditions into seperate single selection conditions, and will also push selections
+
         '''
-        if node is None:
+
+        if node is None: # if the node is empty, do nothing.
             return None
         
-        if node.node_type == SELECT: # check the SELECT of the SQL.
-            conditions = self._split_conditions(node.data)
+        if node.node_type == SELECT: # check the SELECT of the SQL for a SELECT node
+            conditions = self._split_conditions(node.data) 
 
             if len(conditions) > 1: # if there are multiple conditions, we will apply rule 1 below
                 self.optimizations_applied.append(
@@ -439,114 +444,133 @@ class QueryOptimizer:
                 )
             
             current = node.left
-            for condition in reversed(conditions):
-                select_node = QueryNode(SELECT, condition)
-                select_node.selectivity = self._estimate_selectivity(condition)
-                select_node.left = current
-                current = select_node
+
+            for condition in reversed(conditions): # we reverse the conditions so the first condition is at the top of the tree.
+                select_node = QueryNode(SELECT, condition) # we create a new select node for condition in for loop
+                select_node.selectivity = self._estimate_selectivity(condition) # estimate selectivity 
+                select_node.left = current # attach sub-tree under our SELECT
+                current = select_node # this select node becomes our current.
             
-            result = self._push_selection_down(current)
+            result = self._push_selection_down(current) # push selections to bottom of tree if we can
             
-            if len(conditions) > 0:
+            if len(conditions) > 0: # if there are conditions in the SELECT, we try to apply rule 2 and mark as applied.
                 self.optimizations_applied.append(
                     "Rule #2: Push Selections Down"
                 )
             
             return result
         
-        node.left = self._break_and_push_selections(node.left)
+        node.left = self._break_and_push_selections(node.left) # process children subtrees with recursion 
         node.right = self._break_and_push_selections(node.right)
         
         return node
     
     def _split_conditions(self, condition):
-        """Split top-level ANDs, even if there are ORs elsewhere."""
-        parts = []
+        '''
+
+        Split a conjunctive condition into individual conditions if it is not inside parentheses.
+        - we only split when our nested_parenthesis value is 0, so we are at the top level
+
+        '''
+        parts = [] # initalize list of conditions
         current = ""
-        paren_depth = 0
+        nested_parenthesis = 0 # keep track of how many parenthesis we encounter
         i = 0
         n = len(condition)
         
-        while i < n:
+        while i < n: # go through the string
             char = condition[i]
-            if char == '(':
-                paren_depth += 1
+            if char == '(': # we are within another layer of nested parenthesis
+                nested_parenthesis += 1
             elif char == ')':
-                paren_depth -= 1
+                nested_parenthesis -= 1
             
-            is_and = False
-            if paren_depth == 0 and i + 3 <= n:
-                chunk = condition[i:i+3].upper()
-                if chunk == 'AND':
-                    before_ok = (i == 0) or condition[i-1].isspace() or condition[i-1] in ')'
-                    after_ok = (i + 3 == n) or condition[i+3].isspace() or condition[i+3] in '('
-                    if before_ok and after_ok:
-                        is_and = True
+            is_and = False # check if we have an AND at the top level
+
+            if nested_parenthesis == 0 and i + 3 <= n: # if we are at top level and have enough chars for AND
+
+                characters = condition[i:i+3].upper() # check next three characters 
+                if characters == 'AND': 
+                    before_AND = (i == 0) or condition[i-1].isspace() or condition[i-1] in ')' # check before AND
+                    after_AND = (i + 3 == n) or condition[i+3].isspace() or condition[i+3] in '(' # check after AND
+                    if before_AND and after_AND: 
+                        is_and = True # we have a valid AND
 
             if is_and:
+                # save condition
                 if current.strip():
                     parts.append(current.strip())
                 current = ""
-                i += 3
-                while i < n and condition[i].isspace():
+                i += 3 # ignore the AND
+                while i < n and condition[i].isspace(): # ignore whitespace
                     i += 1
                 continue
             
-            current += char
+            current += char 
             i += 1
             
-        if current.strip():
+        if current.strip(): # add last condition
             parts.append(current.strip())
-        return parts if parts else [condition]
+
+        return parts if parts else [condition] # return conditions
     
-    def _resolve_tables(self, tables):
-        """Convert a set of aliases into their underlying table names"""
+    def _alias_to_table_names(self, tables):
+        '''
+        Obtain alias from table names
+        '''
         resolved = set()
-        for t in tables:
+        for t in tables: # for each table, we get its alias if it exists
             resolved.add(self.aliases.get(t, t))
         return resolved
 
     def _push_selection_down(self, node):
         '''
+
         Rule 2: Push a selection node down the tree
+        - push deeper selections in a chain first
+        - we stop pushing if child is groupby/having/outer join
+        - check to ensure if we are pushing potential JOINs by checking child nodes and stop if we are
+
         '''
-        if node is None or node.node_type != SELECT:
+        if node is None or node.node_type != SELECT: # we only need a SELECT node ...
             return node
         
-        child = node.left
+        child = node.left # get child node
 
-        # Chain of σ nodes: push deeper first
+        # if child is a SELECT, we push the child first
         if child and child.node_type == SELECT:
             node.left = self._push_selection_down(child)
             return node
         
-        # Stop at GROUP BY, HAVING, or Outer Joins
+        # stop pushing child if is a group by/having/outer join... 
         if child and child.node_type in [GROUP, HAVING, OUTER_JOIN]:
             return node
         
+        # for join/cartesian product child nodes
         if child and child.node_type in [JOIN, CARTESIAN]:
-            referenced_aliases = self._get_referenced_tables(node.data)
-            referenced_tables = self._resolve_tables(referenced_aliases)
+            referenced_aliases = self._get_referenced_tables(node.data) # obtain necessary alias of table in conditions
+            referenced_tables = self._alias_to_table_names(referenced_aliases) # obtain these tables
             
-            left_tables = self._get_node_tables(child.left)
-            right_tables = self._get_node_tables(child.right)
+            left_tables = self._get_node_tables(child.left) # find tables in left subtree
+            right_tables = self._get_node_tables(child.right) # tables in right subtree
             
-            # If condition references both sides of a CARTESIAN, keep it here for Rule 4
+            # check if this is a join 
             is_join_condition = (
                 referenced_tables.issubset(left_tables.union(right_tables)) and
                 not referenced_tables.issubset(left_tables) and
                 not referenced_tables.issubset(right_tables)
             )
             
+            # if child is cartesian and condition is a join condition, we stop pushing because we need to convert cartisan to join later
             if is_join_condition and child.node_type == CARTESIAN:
                 return node
             
-            if referenced_tables.issubset(left_tables):
-                node.left = child.left
-                child.left = self._push_selection_down(node)
+            if referenced_tables.issubset(left_tables): # if only left tables are needed, we push it down to left child
+                node.left = child.left # focus on left child
+                child.left = self._push_selection_down(node) # push selection down
                 return child
             
-            if referenced_tables.issubset(right_tables):
+            if referenced_tables.issubset(right_tables): # if only right tables are needed
                 node.left = child.right
                 child.right = self._push_selection_down(node)
                 return child
@@ -556,19 +580,19 @@ class QueryOptimizer:
     def _has_top_level_or(self, expr):
         '''
         '''
-        paren_depth = 0
+        nested_parenthesis = 0
         i = 0
         n = len(expr)
         while i < n:
             ch = expr[i]
             if ch == '(':
-                paren_depth += 1
+                nested_parenthesis += 1
             elif ch == ')':
-                paren_depth -= 1
+                nested_parenthesis -= 1
 
-            if paren_depth == 0 and i + 2 <= n:
-                chunk = expr[i:i+2].upper()
-                if chunk == 'OR':
+            if nested_parenthesis == 0 and i + 2 <= n:
+                characters = expr[i:i+2].upper()
+                if characters == 'OR':
                     before_ok = (i == 0) or expr[i-1].isspace() or expr[i-1] in ')'
                     after_ok = (i + 2 == n) or expr[i+2].isspace() or expr[i+2] in '('
                     if before_ok and after_ok:
@@ -663,7 +687,7 @@ class QueryOptimizer:
         if node.node_type == CARTESIAN:
             # Check if this join condition applies to this cartesian
             refs = self._get_referenced_tables(condition)
-            resolved_refs = self._resolve_tables(refs)
+            resolved_refs = self._alias_to_table_names(refs)
             left_tables = self._get_node_tables(node.left)
             right_tables = self._get_node_tables(node.right)
             
