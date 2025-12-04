@@ -1,67 +1,94 @@
+'''
+Name: Ashley Fong
+CS: 5700 Database Systems
+Project: Heuristic Query Optimizer
+San Yeung
+
+'''
+
+'''
+Python Standard Libraries
+'''
 import re
 import os
 import sys
 
-PROJECT = "PROJECT"
-SELECT = "SELECT"
+'''
+Constants representing SQL operations that will appear in final trees.
+'''
+PROJECT = "π"
+SELECT = "σ"
 HAVING = "HAVING"
-JOIN = "JOIN"
+JOIN = "⋈"
 SEMI_JOIN = "SEMI_JOIN"
 ANTI_JOIN = "ANTI_JOIN"
 OUTER_JOIN = "OUTER_JOIN"
 CARTESIAN = "CARTESIAN"
-RELATION = "RELATION"
+RELATION = "Relation: "
 GROUP = "GROUP_BY"
 SORT = "ORDER_BY"
 
 class QueryNode:
     '''
     class QueryNode
-    Purpose:
+    Purpose: This class creates a node, representing an SQL/relational algebra 
+    operation, that will be in the final canonical and optimized query trees.
     '''
     def __init__(
         self,
-        node_type,
-        data="",
-        left=None,
-        right=None,
-        attributes=None,
-        join_condition="",
-        selectivity=1.0
+        node_type, # operation type
+        data="", 
+        left=None, # node to the left aka left child node pointer
+        right=None, # node to the right aka right child node pointer
+        attributes=None, # attributes like SSN, etc
+        join_condition="", # join condition if node is a join node
+        selectivity=1.0 # selectivity 
     ):
+        # store parameters
         self.node_type = node_type
-        self.data = data
+        self.data = data # things that are also stored in the SQL commnad 
         self.left = left
         self.right = right
-        self.attributes = attributes if attributes is not None else []
+        self.attributes = attributes # query attributes
         self.join_condition = join_condition
         self.selectivity = selectivity
 
     def __str__(self, level=0):
-        indent = "  " * level
-        result = f"{indent}{self.node_type}"
+        '''
+        Purpose: Readable representation of a query tree that will be outputted.
+        '''
+        
+        indent = "  " * level # more indents = deeper in tree
+        result = f"{indent}{self.node_type}" # print indent, then the operation type.
         
         if self.data:
-            result += f"_{self.data}"
+            result += f"_{self.data}" # add SQL additional data
         if self.join_condition:
-            result += f" [{self.join_condition}]"
+            result += f" [{self.join_condition}]" # add join condition if it's a join.
         
-        result += "\n"
+        result += "\n" # new line
         
         if self.left:
-            result += self.left.__str__(level + 1)
+            result += self.left.__str__(level + 1) # print the lower query tree of the left child
         if self.right:
-            result += self.right.__str__(level + 1)
+            result += self.right.__str__(level + 1) # print the lower query tree of the right
             
         return result
 
 class SQLParser:
     '''
+
     class SQLParser
-    Purpose:
+    Purpose: Parse SQL Queries that are inputted into each part of the syntax.
+
     '''
     
     def __init__(self, query, schema):
+        '''
+
+        store each SQL clause/syntax portion.
+
+        '''
         self.query = self._normalize_query(query)
         self.schema = schema
         self.select_clause = ""
@@ -75,56 +102,57 @@ class SQLParser:
     def _normalize_query(self, query):
         # Ignore comments in the query that start with --.
         query = re.sub(r'--.*?$', '', query, flags=re.MULTILINE)
-        # Handle smart quotes
-        query = query.replace(''', "'").replace(''', "'").replace('"', '"').replace('"', '"')
+
         # Remove any new lines.
         query = re.sub(r'\s+', ' ', query)
-        return query.strip()
+        return query.strip() # remove excess spaces
     
     def parse(self):
         '''
         def parse
-        Purpose:
+        Purpose: Using RE libarary, we extract each part of the SQL query into its individual parts.
         '''
         query = self.query
         
-        # Extract SELECT
+        # Search for SELECT ... FROM by using REGEX with any cases and any # of lines, if matching, remove white space 
         select_match = re.search(r'SELECT\s+(.*?)\s+FROM', query, re.IGNORECASE | re.DOTALL)
         if select_match:
             self.select_clause = select_match.group(1).strip()
         
-        # Extract FROM
+        # Search FROM ... to WHERE / other potential next clauses with any cases and any # of lines
         from_match = re.search(r'FROM\s+(.*?)(?:WHERE|GROUP BY|HAVING|ORDER BY|$)', 
                               query, re.IGNORECASE | re.DOTALL)
         if from_match:
-            self.from_clause = from_match.group(1).strip()
-            self._parse_table_aliases()
+            self.from_clause = from_match.group(1).strip() # if we find from, store it and remove white space
+            self._parse_table_aliases() # obtain any necessary table alias.
+
         
-        # Extract WHERE
+        # Search WHERE through keyword to potential next clauses with any cases and any # of lines
         where_match = re.search(r'WHERE\s+(.*?)(?:GROUP BY|HAVING|ORDER BY|$)', 
                                query, re.IGNORECASE | re.DOTALL)
         if where_match:
             self.where_clause = where_match.group(1).strip()
         
-        # Extract GROUP BY
+        # Search GROUP BY through keyword to potential next clauses with any cases and any # of lines
         group_match = re.search(r'GROUP BY\s+(.*?)(?:HAVING|ORDER BY|$)', 
                                query, re.IGNORECASE | re.DOTALL)
         if group_match:
             self.group_by_clause = group_match.group(1).strip()
         
-        # Extract HAVING
+        # Search HAVING through keyword to potential next clauses with any cases and any # of lines
         having_match = re.search(r'HAVING\s+(.*?)(?:ORDER BY|$)', 
                                 query, re.IGNORECASE | re.DOTALL)
         if having_match:
             self.having_clause = having_match.group(1).strip()
         
-        # Extract ORDER BY
+        # Search ORDER BY through keyword to potential next clauses/end of SQL query with any cases and any # of lines
         order_match = re.search(r'ORDER BY\s+(.*?)(?:;|$)', 
                                query, re.IGNORECASE | re.DOTALL)
         if order_match:
             self.order_by_clause = order_match.group(1).strip()
         
         return {
+            # return all parts of SQL query in a dictionary
             'select': self.select_clause,
             'from': self.from_clause,
             'where': self.where_clause,
@@ -135,38 +163,50 @@ class SQLParser:
         }
     
     def _parse_table_aliases(self):
-        """Extract table aliases from FROM clause"""
-        # 1. Handle comma-separated list
+        '''
+        We need to obtain any aliases of the tables in FROM
+        '''
+        # If seperated by commas
         if ',' in self.from_clause:
+            # obtain parts seperated by commas
             items = [x.strip() for x in self.from_clause.split(',')]
             for item in items:
+                # skip if items are JOIN
                 if re.search(r'\s+JOIN\s+', item, re.IGNORECASE):
                     continue
-                parts = item.split()
+                parts = item.split() # split item by space
                 if len(parts) >= 2:
+                    # if table has alias --> Relation goes with alias R
                     self.table_aliases[parts[1]] = parts[0]
                 else:
+                    # if no alias, Relation is just Relation
                     self.table_aliases[parts[0]] = parts[0]
         
-        # 2. Handle explicit JOINs
+        # JOIN 
         parts = re.split(r'\s+(?:INNER\s+|LEFT\s+OUTER\s+|RIGHT\s+OUTER\s+|FULL\s+OUTER\s+)?JOIN\s+', 
-                        self.from_clause, flags=re.IGNORECASE)
+                        self.from_clause, flags=re.IGNORECASE) # remove from and join
         
         for part in parts:
+            # strip ON
             part = re.split(r'\s+ON\s+', part, flags=re.IGNORECASE)[0]
-            if ',' not in part:
+            if ',' not in part: # skip any comma seperated parts
+                # match table alias
                 match = re.search(r'(\w+)\s+(\w+)$', part.strip())
                 if match:
                     table, alias = match.groups()
                     self.table_aliases[alias] = table
                 else:
+                    # match table name
                     match = re.search(r'(\w+)$', part.strip())
                     if match:
                         table = match.group(1)
                         self.table_aliases[table] = table
 
 class QueryTreeBuilder:
-    """Build canonical and optimized query trees"""
+    '''
+    class QueryTreeBuilder
+    Purpose: functions to build query trees from SQL queries.
+    '''
     
     def __init__(self, parsed_query, schema):
         self.parsed = parsed_query
@@ -956,57 +996,50 @@ def load_schema_from_file(content):
     return schema
 
 def process_query_file(filename):
-    try:
-        with open(filename, 'r', encoding='utf-8') as f:
-            content = f.read()
+    # open file and read contents
+    with open(filename, 'r', encoding='utf-8') as f:
+        content = f.read()
         
-        schema = load_schema_from_file(content)
-        query_match = re.search(r'-- SQL Query --(.*)', content, re.DOTALL | re.IGNORECASE)
+    schema = load_schema_from_file(content)
+    query_match = re.search(r'-- SQL Query --(.*)', content, re.DOTALL | re.IGNORECASE)
         
-        if not query_match:
-            print(f"No SQL query found in {filename}")
-            return
             
-        query = query_match.group(1).strip()
-        parser = SQLParser(query, schema)
-        parsed = parser.parse()
+    query = query_match.group(1).strip()
+    parser = SQLParser(query, schema)
+    parsed = parser.parse()
+
+    # printing final results ! 
+    print(f"\n{'*'*80}")
+    print(f"Query Optimization Results for: {filename}")
+    print(f"{'*'*80}\n")
         
-        print(f"\n{'='*80}")
-        print(f"Processing: {filename}")
-        print(f"{'='*80}\n")
+    print("SQL query:")
+    print(query)
+    print()
         
-        print("SQL query:")
-        print(query)
-        print()
+    builder = QueryTreeBuilder(parsed, schema)
+    canonical_tree = builder.build_canonical_tree()
+    print("\ncanonical query tree:")
+    print(canonical_tree)
         
-        builder = QueryTreeBuilder(parsed, schema)
-        canonical_tree = builder.build_canonical_tree()
-        print("\ncanonical query tree:")
-        print(canonical_tree)
+    optimizer = QueryOptimizer(schema, parsed['aliases'])
+    optimized_tree = optimizer.optimize(canonical_tree)
         
-        optimizer = QueryOptimizer(schema, parsed['aliases'])
-        optimized_tree = optimizer.optimize(canonical_tree)
+    print("\noptimized query tree:")
+    print(optimized_tree)
         
-        print("\noptimized query tree:")
-        print(optimized_tree)
+    optimized_sql = build_sql_from_tree(optimized_tree, parsed)
+    print("\nsql query with optimizations:")
+    print(optimized_sql)
         
-        optimized_sql = build_sql_from_tree(optimized_tree, parsed)
-        print("\nsql query with optimizations:")
-        print(optimized_sql)
+    print("\nrules applied:")
+    seen_rules = set()
+    for x in optimizer.optimizations_applied:
+        if x not in seen_rules:
+            print(f"✓ {x}")
+            seen_rules.add(x)
         
-        print("\nrules applied:")
-        seen_rules = set()
-        for opt in optimizer.optimizations_applied:
-            if opt not in seen_rules:
-                print(f"✓ {opt}")
-                seen_rules.add(opt)
-        
-        print("\n" + "="*80 + "\n")
-        
-    except FileNotFoundError:
-        print(f"Error: File '{filename}' not found")
-    except Exception as e:
-        print(f"Error processing {filename}: {str(e)}")
+    print("\n" + "*"*80 + "\n")
 
 if __name__ == "__main__":
     if len(sys.argv) > 1:
