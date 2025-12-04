@@ -2,18 +2,17 @@ import re
 import os
 import sys
 
-# Node type symbols (no Enum)
-PROJECT = "π"        # Projection (Rule 5)
-SELECT = "σ"         # Selection (WHERE)
-HAVING = "σ_having"  # Selection (HAVING)
-JOIN = "⋈"           # daaJoin
-SEMI_JOIN = "⋉"      # Semi-join
-ANTI_JOIN = "▷"      # Anti-join
-OUTER_JOIN = "⟕"     # Outer join
-CARTESIAN = "×"      # Cartesian product
-RELATION = "R"       # Base relation
-GROUP = "γ"          # Group by
-SORT = "τ"           # Order by
+PROJECT = "PROJECT"
+SELECT = "SELECT"
+HAVING = "HAVING"
+JOIN = "JOIN"
+SEMI_JOIN = "SEMI_JOIN"
+ANTI_JOIN = "ANTI_JOIN"
+OUTER_JOIN = "OUTER_JOIN"
+CARTESIAN = "CARTESIAN"
+RELATION = "RELATION"
+GROUP = "GROUP_BY"
+SORT = "ORDER_BY"
 
 class QueryNode:
     '''
@@ -77,7 +76,7 @@ class SQLParser:
         # Ignore comments in the query that start with --.
         query = re.sub(r'--.*?$', '', query, flags=re.MULTILINE)
         # Handle smart quotes
-        query = query.replace('‘', "'").replace('’', "'").replace('“', '"').replace('”', '"')
+        query = query.replace(''', "'").replace(''', "'").replace('"', '"').replace('"', '"')
         # Remove any new lines.
         query = re.sub(r'\s+', ' ', query)
         return query.strip()
@@ -296,23 +295,28 @@ class QueryOptimizer:
         
         # Rule 1 & 2: Break up conjunctive selections and push down
         root = self._break_and_push_selections(root)
-        print(f'Checking Rule 1 & 2 {root}')
-        
-        # Rule 4: Replace Cartesian product + selection → Join
-        root = self._cartesian_to_join(root)
-        print(f'Checking Rule 4 {root}')
+        print("Rule 1/2")
+        print(root)
 
         # Rule 3: Order selections by selectivity 
         root = self._order_by_selectivity(root)
-        print(f'Checking Rule 3 {root}')
+        print("Rule 3")
+        print(root)
+
+        # Rule 4: Replace Cartesian product + selection → Join
+        root = self._cartesian_to_join(root)
+        print("Rule 4")
+        print(root)
         
         # Rule 5: Push projections down
         root = self._push_projections(root)
-        print(f'Checking Rule 5 {root}')
+        print("Rule 5")
+        print(root)
         
         # Extra credit: unnest IN / NOT IN subqueries into semi/anti-joins
         root = self._unnest_subqueries(root)
-        print(f'Checking Unnest Rules {root}')
+        print(f'Unnest Rules')
+        print(root)
         
         return root
     
@@ -398,7 +402,9 @@ class QueryOptimizer:
         return resolved
 
     def _push_selection_down(self, node):
-        """Rule 2: Push a selection node down the tree"""
+        '''
+        Rule 2: Push a selection node down the tree
+        '''
         if node is None or node.node_type != SELECT:
             return node
         
@@ -443,7 +449,8 @@ class QueryOptimizer:
         return node
 
     def _has_top_level_or(self, expr):
-        """Return True if expr has a top-level OR (not inside parentheses)."""
+        '''
+        '''
         paren_depth = 0
         i = 0
         n = len(expr)
@@ -465,11 +472,14 @@ class QueryOptimizer:
         return False
 
     def _selectivity_key(self, node):
-        """Helper for sorting by selectivity."""
+        '''
+        '''
         return node.selectivity
     
     def _order_by_selectivity(self, node):
-        """Rule 3: Order selections by selectivity"""
+        '''
+        Rule 3: Order selections by selectivity
+        '''
         if node is None:
             return None
         
@@ -506,35 +516,211 @@ class QueryOptimizer:
         if node is None:
             return None
         
-        if (node.node_type == SELECT and 
-            node.left and node.left.node_type == CARTESIAN):
+        # Check if this is a SELECT with a join condition
+        if node.node_type == SELECT and self._is_join_condition(node.data):
+            # Find a cartesian product in the subtree that this join condition applies to
+            cartesian_node, parent = self._find_applicable_cartesian(node.left, node.data)
             
-            if self._is_join_condition(node.data):
-                cartesian = node.left
+            if cartesian_node is not None:
                 join_node = QueryNode(JOIN, "INNER JOIN", join_condition=node.data)
-                join_node.left = cartesian.left
-                join_node.right = cartesian.right
+                join_node.left = cartesian_node.left
+                join_node.right = cartesian_node.right
+                
+                # Replace the cartesian in the tree
+                if parent is None:
+                    # The cartesian was directly under this select
+                    result = join_node
+                else:
+                    # Replace in parent
+                    if parent.left == cartesian_node:
+                        parent.left = join_node
+                    else:
+                        parent.right = join_node
+                    result = node.left
                 
                 self.optimizations_applied.append(
                     "Rule #4: Replace Cartesian Product + Selection → Join"
                 )
                 
-                return self._cartesian_to_join(join_node)
+                # Continue optimizing the result
+                return self._cartesian_to_join(result)
         
         node.left = self._cartesian_to_join(node.left)
         node.right = self._cartesian_to_join(node.right)
         
         return node
     
+    def _find_applicable_cartesian(self, node, condition, parent=None):
+        """Find a cartesian product that the given join condition applies to"""
+        if node is None:
+            return None, None
+        
+        if node.node_type == CARTESIAN:
+            # Check if this join condition applies to this cartesian
+            refs = self._get_referenced_tables(condition)
+            resolved_refs = self._resolve_tables(refs)
+            left_tables = self._get_node_tables(node.left)
+            right_tables = self._get_node_tables(node.right)
+            
+            # Join condition should reference both sides
+            if (not resolved_refs.issubset(left_tables) and 
+                not resolved_refs.issubset(right_tables) and
+                resolved_refs.issubset(left_tables.union(right_tables))):
+                return node, parent
+        
+        # Search left subtree
+        result, p = self._find_applicable_cartesian(node.left, condition, node)
+        if result:
+            return result, p
+        
+        # Search right subtree
+        return self._find_applicable_cartesian(node.right, condition, node)
+    
     def _push_projections(self, node):
-        """Rule 5: Push projections down"""
+        """Rule 5: Push projections down to reduce intermediate result sizes"""
         if node is None:
             return None
-        if node.node_type == PROJECT:
-            self.optimizations_applied.append("Rule #5: Push Projections Down")
+        
+        # First recursively process children
         node.left = self._push_projections(node.left)
         node.right = self._push_projections(node.right)
+        
+        # Only process if this is a projection node
+        if node.node_type != PROJECT:
+            return node
+        
+        # Mark that we're applying Rule 5
+        if "Rule #5: Push Projections Down" not in self.optimizations_applied:
+            self.optimizations_applied.append("Rule #5: Push Projections Down")
+        
+        # Parse the attributes being projected
+        projected_attrs = self._parse_projection_attributes(node.data)
+        
+        # Collect additional attributes needed for operations above this point
+        needed_attrs = self._collect_needed_attributes(node.left, projected_attrs)
+        
+        # Push projections down to each relation
+        node.left = self._insert_projections(node.left, needed_attrs)
+        
         return node
+    
+    def _parse_projection_attributes(self, proj_clause):
+        '''
+        '''
+        if proj_clause == '*':
+            return set()  # Keep all attributes
+        
+        attrs = set()
+        # Split by comma, but be careful of function calls like COUNT(*)
+        parts = [p.strip() for p in proj_clause.split(',')]
+        
+        for part in parts:
+            # Handle aggregation functions: COUNT(E.Salary), SUM(...)
+            func_match = re.match(r'(COUNT|SUM|AVG|MIN|MAX)\s*\((.*?)\)', part, re.IGNORECASE)
+            if func_match:
+                inner = func_match.group(2).strip()
+                if inner != '*':
+                    # Extract table.attr from inside function
+                    attr_match = re.match(r'([A-Za-z_]\w*)\.([A-Za-z_]\w*)', inner)
+                    if attr_match:
+                        attrs.add((attr_match.group(1), attr_match.group(2)))
+            else:
+                # Regular attribute: E.Lname or just Lname
+                attr_match = re.match(r'([A-Za-z_]\w*)\.([A-Za-z_]\w*)', part)
+                if attr_match:
+                    attrs.add((attr_match.group(1), attr_match.group(2)))
+        
+        return attrs
+    
+    def _collect_needed_attributes(self, node, base_attrs):
+        """
+        Traverse tree to collect all attributes needed:
+        - Attributes in the projection
+        - Attributes in join conditions
+        - Attributes in selection predicates
+        - Attributes in GROUP BY, HAVING, ORDER BY
+        """
+        needed = set(base_attrs)
+        
+        def traverse(n):
+            if n is None:
+                return
+            
+            # Collect from selections
+            if n.node_type == SELECT or n.node_type == HAVING:
+                refs = self._get_referenced_attributes(n.data)
+                needed.update(refs)
+            
+            # Collect from joins
+            elif n.node_type in [JOIN, SEMI_JOIN, ANTI_JOIN, OUTER_JOIN]:
+                if n.join_condition:
+                    refs = self._get_referenced_attributes(n.join_condition)
+                    needed.update(refs)
+            
+            # Collect from GROUP BY
+            elif n.node_type == GROUP:
+                refs = self._get_referenced_attributes(n.data)
+                needed.update(refs)
+            
+            # Collect from ORDER BY
+            elif n.node_type == SORT:
+                refs = self._get_referenced_attributes(n.data)
+                needed.update(refs)
+            
+            traverse(n.left)
+            traverse(n.right)
+        
+        traverse(node)
+        return needed
+    
+    def _get_referenced_attributes(self, expression):
+        """
+        Extract all table.attribute references from an expression
+        Returns set of (alias, attribute) tuples
+        """
+        attrs = set()
+        # Match patterns like E.Lname, W.Pno, etc.
+        matches = re.findall(r'([A-Za-z_]\w*)\.([A-Za-z_]\w*)', expression)
+        for alias, attr in matches:
+            attrs.add((alias, attr))
+        return attrs
+    
+    def _insert_projections(self, node, needed_attrs):
+        '''
+        '''
+        if node is None:
+            return None
+        
+        # If this is a relation, add a projection above it
+        if node.node_type == RELATION:
+            # Find which attributes from this relation are needed
+            relation_attrs = []
+            for alias, attr in needed_attrs:
+                # Check if this alias refers to this relation
+                resolved_table = self.aliases.get(alias, alias)
+                if resolved_table == node.data:
+                    relation_attrs.append(f"{alias}.{attr}")
+            
+            # Only add projection if we're actually filtering attributes
+            all_attrs = self._get_all_relation_attributes(node.data)
+            if relation_attrs and all_attrs and len(relation_attrs) < len(all_attrs):
+                proj_node = QueryNode(PROJECT, ", ".join(relation_attrs))
+                proj_node.left = node
+                return proj_node
+            
+            return node
+        
+        # For other nodes, recurse
+        node.left = self._insert_projections(node.left, needed_attrs)
+        node.right = self._insert_projections(node.right, needed_attrs)
+        
+        return node
+    
+    def _get_all_relation_attributes(self, table_name):
+        """Get all attributes of a relation from schema"""
+        if table_name in self.schema:
+            return self.schema[table_name]['attributes']
+        return []
 
     # ---------- Extra Credit: Unnest IN / NOT IN into semi/anti-joins ----------
 
