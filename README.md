@@ -90,5 +90,5 @@ The optimized query tree is output, which is the final query tree after all rule
 
 an SQL query with refinements will also be output, which is the optimized query tree converted to SQL. 
 
-finally a description of the rules applied will be output.
+Finally, a description of the rules applied will be output.
 
