@@ -81,7 +81,7 @@ class SQLParser:
     '''
 
     class SQLParser
-    Purpose: Parse SQL Queries that are inputted into each part of the syntax.
+    Purpose: Parse SQL Queries that are inputted into each part of the syntax using regular expressions and checking matches of an input.
 
     '''
     
@@ -112,7 +112,8 @@ class SQLParser:
     def parse(self):
         '''
         def parse
-        Purpose: Using RE libarary, we extract each part of the SQL query into its individual parts.
+        Purpose: Using the regular expressions libarary, we extract each part of the SQL query into its individual parts
+        by searching for matches of keywords
         '''
         query = self.query
         
@@ -217,7 +218,9 @@ class QueryTreeBuilder:
         
     def build_canonical_tree(self):
         '''
-        Purpose: To build the canonical tree from the inital SQL query with no optimizations.
+
+        Purpose: To build the canonical tree from the inital SQL query with no optimizations by using nodes with children for each clause
+
         '''
 
         # we build starting from FROM clause to put relation tables at the bottom of the tree
@@ -257,7 +260,9 @@ class QueryTreeBuilder:
     
     def _build_from_tree(self):
         '''
+
         Build a tree starting from the FROM clause
+
         '''
 
         from_clause = self.parsed['from'] # get FROM ...
@@ -299,7 +304,8 @@ class QueryTreeBuilder:
     def _parse_joins(self, from_clause):
         '''
 
-        parse JOIN in FROM into dictionary format
+        parse JOIN in FROM into dictionary format 
+        - using regular expressions to identify join components
 
         '''
         joins = []
@@ -389,7 +395,7 @@ class QueryOptimizer:
         4	Replace Cartesian Product + Selection → Join	Combine cross-products followed by join conditions into a single ⋈ operator.
         5	Push Projections Down	Apply projections early to eliminate unnecessary attributes before joins.
 
-        call each function to check/apply each rule
+        call each function to check/apply each rule and then print the tree after each rule for tracking.
       
         '''
         self.optimizations_applied = [] # remember which rules were applied ....
@@ -516,7 +522,9 @@ class QueryOptimizer:
     
     def _alias_to_table_names(self, tables):
         '''
+
         Obtain alias from table names
+
         '''
         resolved = set()
         for t in tables: # for each table, we get its alias if it exists
@@ -579,93 +587,121 @@ class QueryOptimizer:
 
     def _has_top_level_or(self, expr):
         '''
+
+        checks for non-nested ORs by tracking the parenthesis depth and validating surrounding characters
+        - like the AND function ...
+
         '''
-        nested_parenthesis = 0
+        nested_parenthesis = 0 
         i = 0
         n = len(expr)
+
         while i < n:
             ch = expr[i]
-            if ch == '(':
+            if ch == '(': # we are within another layer of nested parenthesis
                 nested_parenthesis += 1
-            elif ch == ')':
+            elif ch == ')': # end of parenthesis
                 nested_parenthesis -= 1
 
-            if nested_parenthesis == 0 and i + 2 <= n:
-                characters = expr[i:i+2].upper()
-                if characters == 'OR':
-                    before_ok = (i == 0) or expr[i-1].isspace() or expr[i-1] in ')'
-                    after_ok = (i + 2 == n) or expr[i+2].isspace() or expr[i+2] in '('
-                    if before_ok and after_ok:
+            if nested_parenthesis == 0 and i + 2 <= n: # we only check for OR if we are outside of parenthesis completely
+                characters = expr[i:i+2].upper() # extract two characters 
+                if characters == 'OR': # check if they're or
+                    before_OR = (i == 0) or expr[i-1].isspace() or expr[i-1] in ')'
+                    after_OR = (i + 2 == n) or expr[i+2].isspace() or expr[i+2] in '('
+                    if before_OR and after_OR:
                         return True
             i += 1
         return False
 
     def _selectivity_key(self, node):
         '''
+
+        JUST RETURNS THE SELECIVITY OF THE NODE 
+
         '''
         return node.selectivity
     
     def _order_by_selectivity(self, node):
         '''
+
         Rule 3: Order selections by selectivity
+        - by identifiying selection chains
+        - sort by selectivity value
+        - rebuild selection chain in order of selectivity
+        - attach subtree back to last selection
+
         '''
-        if node is None:
+
+        if node is None: # basic if no node, do nothing
             return None
         
-        if node.node_type == SELECT:
+        if node.node_type == SELECT: # if node is select, we collect all the selects in a list
             selections = []
             current = node
             while current and current.node_type == SELECT:
                 selections.append(current)
-                current = current.left
+                current = current.left # go down the selects
                 
-            if len(selections) > 1:
-                # Skip Rule 3 if any selection has a top-level OR (input2 case)
-                if any(self._has_top_level_or(sel.data) for sel in selections):
-                    selections[-1].left = self._order_by_selectivity(current)
+            if len(selections) > 1: # only need to reorder if more than one select
+                if any(self._has_top_level_or(sel.data) for sel in selections): # if any selection has a top level OR, we skip reordering
+                    selections[-1].left = self._order_by_selectivity(current) # put the tree back
                     return node
 
-                selections.sort(key=self._selectivity_key)
-                self.optimizations_applied.append("Rule #3: Apply Selections with Smallest Selectivity First")
+                selections.sort(key=self._selectivity_key) # sort selections by selectivity value
+                self.optimizations_applied.append("Rule #3: Apply Selections with Smallest Selectivity First") # mark rule as applied
                 
-                root = selections[0]
-                for i in range(len(selections) - 1):
+                root = selections[0] # new root is smallest selectivity aka most selective
+                for i in range(len(selections) - 1): # chain the selections together
                     selections[i].left = selections[i+1]
-                selections[-1].left = current
+
+                selections[-1].left = current # put subtree back
                 
-                selections[-1].left = self._order_by_selectivity(current)
+                selections[-1].left = self._order_by_selectivity(current) # further apply rule 3
+
                 return root
-        
-        node.left = self._order_by_selectivity(node.left)
+            
+
+        # if node isn't select, we can apply to children
+
+        node.left = self._order_by_selectivity(node.left) 
         node.right = self._order_by_selectivity(node.right)
         return node
     
     def _cartesian_to_join(self, node):
-        """Rule 4: Convert Cartesian product + selection to join"""
-        if node is None:
+        '''
+
+        Rule 4: Convert Cartesian product + selection to join
+        - look for SELECT nodes with cartisan products
+        - when matching cartesian product, we create a JOIN node with the select as condition
+        - remove previous select
+
+        '''
+
+        if node is None: # base case again
             return None
         
-        # Check if this is a SELECT with a join condition
-        if node.node_type == SELECT and self._is_join_condition(node.data):
-            # Find a cartesian product in the subtree that this join condition applies to
-            cartesian_node, parent = self._find_applicable_cartesian(node.left, node.data)
+        if node.node_type == SELECT and self._is_join_condition(node.data): # Check if this is a SELECT with a join condition
+            cartesian_node, parent = self._find_applicable_cartesian(node.left, node.data) # look for applicable cartesian product
             
-            if cartesian_node is not None:
-                join_node = QueryNode(JOIN, "INNER JOIN", join_condition=node.data)
+            if cartesian_node is not None: # if we find cartisan product
+                join_node = QueryNode(JOIN, "INNER JOIN", join_condition=node.data) # create a JOIN node
                 join_node.left = cartesian_node.left
                 join_node.right = cartesian_node.right
                 
                 # Replace the cartesian in the tree
+
                 if parent is None:
                     # The cartesian was directly under this select
-                    result = join_node
+
+                    result = join_node # select is removed, JOIN becomes new subtree
                 else:
-                    # Replace in parent
-                    if parent.left == cartesian_node:
+                    # cartesian has a parent node, so we replace it there
+                    if parent.left == cartesian_node: 
                         parent.left = join_node
                     else:
                         parent.right = join_node
-                    result = node.left
+
+                    result = node.left # result is now the subtree under the select
                 
                 self.optimizations_applied.append(
                     "Rule #4: Replace Cartesian Product + Selection → Join"
@@ -673,29 +709,36 @@ class QueryOptimizer:
                 
                 # Continue optimizing the result
                 return self._cartesian_to_join(result)
-        
+            
+        # process children nodes
         node.left = self._cartesian_to_join(node.left)
         node.right = self._cartesian_to_join(node.right)
         
         return node
     
     def _find_applicable_cartesian(self, node, condition, parent=None):
-        """Find a cartesian product that the given join condition applies to"""
+        '''
+        
+        Find the cartesian product node where a given condition can become a join condition
+
+        '''
         if node is None:
             return None, None
         
-        if node.node_type == CARTESIAN:
-            # Check if this join condition applies to this cartesian
-            refs = self._get_referenced_tables(condition)
-            resolved_refs = self._alias_to_table_names(refs)
-            left_tables = self._get_node_tables(node.left)
-            right_tables = self._get_node_tables(node.right)
+        if node.node_type == CARTESIAN: # Check if this join condition applies to this cartesian
+            refs = self._get_referenced_tables(condition) # obtain alias
+            resolved_refs = self._alias_to_table_names(refs) # obtain table names
+            left_tables = self._get_node_tables(node.left) # tables in left subtree
+            right_tables = self._get_node_tables(node.right) # tables in right subtree
             
-            # Join condition should reference both sides
+            # Join condition should reference both sides check
             if (not resolved_refs.issubset(left_tables) and 
                 not resolved_refs.issubset(right_tables) and
                 resolved_refs.issubset(left_tables.union(right_tables))):
                 return node, parent
+            
+        
+        # check if join refs both sides ........
         
         # Search left subtree
         result, p = self._find_applicable_cartesian(node.left, condition, node)
@@ -706,7 +749,9 @@ class QueryOptimizer:
         return self._find_applicable_cartesian(node.right, condition, node)
     
     def _push_projections(self, node):
-        """Rule 5: Push projections down to reduce intermediate result sizes"""
+        '''
+        Rule 5: Push Projections Down
+        '''
         if node is None:
             return None
         
@@ -714,123 +759,123 @@ class QueryOptimizer:
         node.left = self._push_projections(node.left)
         node.right = self._push_projections(node.right)
         
-        # Only process if this is a projection node
+        
         if node.node_type != PROJECT:
-            return node
+            return node # return if not project
         
         # Mark that we're applying Rule 5
         if "Rule #5: Push Projections Down" not in self.optimizations_applied:
             self.optimizations_applied.append("Rule #5: Push Projections Down")
         
-        # Parse the attributes being projected
-        projected_attrs = self._parse_projection_attributes(node.data)
+        projected_attrs = self._parse_projection_attributes(node.data) # Parse the attributes being projected
         
         # Collect additional attributes needed for operations above this point
         needed_attrs = self._collect_needed_attributes(node.left, projected_attrs)
         
-        # Push projections down to each relation
-        node.left = self._insert_projections(node.left, needed_attrs)
+       
+        node.left = self._insert_projections(node.left, needed_attrs)  # Push projections down to each relation
         
         return node
     
     def _parse_projection_attributes(self, proj_clause):
         '''
+
+        set of attributes being projected
+        - for projection *, we return empty set to indicate all attributes are kept
+        - otherwise split on commas
+        - check aggregation functions and extract inner attributes
+
         '''
         if proj_clause == '*':
             return set()  # Keep all attributes
         
         attrs = set()
-        # Split by comma, but be careful of function calls like COUNT(*)
-        parts = [p.strip() for p in proj_clause.split(',')]
+        
+        parts = [p.strip() for p in proj_clause.split(',')] # Split by comma, but be careful of function calls like COUNT(*)
         
         for part in parts:
-            # Handle aggregation functions: COUNT(E.Salary), SUM(...)
-            func_match = re.match(r'(COUNT|SUM|AVG|MIN|MAX)\s*\((.*?)\)', part, re.IGNORECASE)
+            
+            func_match = re.match(r'(COUNT|SUM|AVG|MIN|MAX)\s*\((.*?)\)', part, re.IGNORECASE) # Handle aggregation functions: COUNT(E.Salary), SUM(...)
             if func_match:
                 inner = func_match.group(2).strip()
                 if inner != '*':
-                    # Extract table.attr from inside function
-                    attr_match = re.match(r'([A-Za-z_]\w*)\.([A-Za-z_]\w*)', inner)
+                    attr_match = re.match(r'([A-Za-z_]\w*)\.([A-Za-z_]\w*)', inner) # Extract table.attr from inside function
                     if attr_match:
                         attrs.add((attr_match.group(1), attr_match.group(2)))
             else:
-                # Regular attribute: E.Lname or just Lname
-                attr_match = re.match(r'([A-Za-z_]\w*)\.([A-Za-z_]\w*)', part)
+                attr_match = re.match(r'([A-Za-z_]\w*)\.([A-Za-z_]\w*)', part) # Regular attributes are here
                 if attr_match:
                     attrs.add((attr_match.group(1), attr_match.group(2)))
         
         return attrs
     
     def _collect_needed_attributes(self, node, base_attrs):
-        """
-        Traverse tree to collect all attributes needed:
-        - Attributes in the projection
-        - Attributes in join conditions
-        - Attributes in selection predicates
-        - Attributes in GROUP BY, HAVING, ORDER BY
-        """
-        needed = set(base_attrs)
+        '''
+
+        move up the tree to collect all attributes needed for operations above
+
+        '''
+        necessary = set(base_attrs)
         
         def traverse(n):
             if n is None:
                 return
             
-            # Collect from selections
+            # selections
             if n.node_type == SELECT or n.node_type == HAVING:
                 refs = self._get_referenced_attributes(n.data)
-                needed.update(refs)
+                necessary.update(refs)
             
-            # Collect from joins
+            # joins
             elif n.node_type in [JOIN, SEMI_JOIN, ANTI_JOIN, OUTER_JOIN]:
                 if n.join_condition:
                     refs = self._get_referenced_attributes(n.join_condition)
-                    needed.update(refs)
+                    necessary.update(refs)
             
-            # Collect from GROUP BY
+            # GROUP BY 
             elif n.node_type == GROUP:
                 refs = self._get_referenced_attributes(n.data)
-                needed.update(refs)
+                necessary.update(refs)
             
-            # Collect from ORDER BY
+            # ORDER BY
             elif n.node_type == SORT:
                 refs = self._get_referenced_attributes(n.data)
-                needed.update(refs)
+                necessary.update(refs)
             
             traverse(n.left)
             traverse(n.right)
         
         traverse(node)
-        return needed
+        return necessary
     
     def _get_referenced_attributes(self, expression):
-        """
-        Extract all table.attribute references from an expression
-        Returns set of (alias, attribute) tuples
-        """
+        '''
+
+        get all referenced attributes from an expression
+
+        '''
+
         attrs = set()
-        # Match patterns like E.Lname, W.Pno, etc.
-        matches = re.findall(r'([A-Za-z_]\w*)\.([A-Za-z_]\w*)', expression)
+        matches = re.findall(r'([A-Za-z_]\w*)\.([A-Za-z_]\w*)', expression) # match patterns regular expressions
         for alias, attr in matches:
             attrs.add((alias, attr))
         return attrs
     
     def _insert_projections(self, node, needed_attrs):
         '''
+        Insert projection nodes above relations based on needed attributes
         '''
         if node is None:
             return None
         
-        # If this is a relation, add a projection above it
-        if node.node_type == RELATION:
-            # Find which attributes from this relation are needed
+        if node.node_type == RELATION: # for relation nodes, insert projection if needed
             relation_attrs = []
             for alias, attr in needed_attrs:
-                # Check if this alias refers to this relation
-                resolved_table = self.aliases.get(alias, alias)
+                resolved_table = self.aliases.get(alias, alias) # does alias refer to a table
                 if resolved_table == node.data:
                     relation_attrs.append(f"{alias}.{attr}")
             
-            # Only add projection if we're actually filtering attributes
+            # projections only if filters]
             all_attrs = self._get_all_relation_attributes(node.data)
             if relation_attrs and all_attrs and len(relation_attrs) < len(all_attrs):
                 proj_node = QueryNode(PROJECT, ", ".join(relation_attrs))
@@ -839,7 +884,7 @@ class QueryOptimizer:
             
             return node
         
-        # For other nodes, recurse
+        # do this to the children nodes
         node.left = self._insert_projections(node.left, needed_attrs)
         node.right = self._insert_projections(node.right, needed_attrs)
         
@@ -851,19 +896,15 @@ class QueryOptimizer:
             return self.schema[table_name]['attributes']
         return []
 
-    # ---------- Extra Credit: Unnest IN / NOT IN into semi/anti-joins ----------
-
     def _unnest_in_subquery(self, node, anti=False):
-        """
-        Convert a condition of the form:
-            outer_col IN (SELECT inner_col FROM T [alias] [WHERE inner_pred])
-        or
-            outer_col NOT IN (SELECT inner_col FROM T [alias] [WHERE inner_pred])
-        into a SEMI_JOIN (⋉) or ANTI_JOIN (▷) node.
+        '''
 
-        Assumes node.data is exactly that IN / NOT IN expression
-        (true after Rule 1 splits on AND).
-        """
+        basically convert IN/NOT IN subquery to semi/anti-join
+        - use regular expressions to identify the pattern
+        - extract outer column, inner column, table name, and inner where predicate
+        - build semi/anti-join node with appropriate subtrees
+
+        '''
         pattern = r"""
             ^\s*
             ([A-Za-z_]\w*\.[A-Za-z_]\w*)      # outer_col, e.g. E.Ssn
@@ -877,31 +918,31 @@ class QueryOptimizer:
                 (?:\s+WHERE\s+(.*))?          # optional inner WHERE predicate
             \)\s*
             $
-        """
-        m = re.match(pattern, node.data, re.IGNORECASE | re.VERBOSE)
+        """ # regex pattern 
+        m = re.match(pattern, node.data, re.IGNORECASE | re.VERBOSE) # match aforementioned pattern
         if not m:
             return None  # pattern not supported
         
+        # components
         outer_col = m.group(1)
         inner_col = m.group(2)
         from_part = m.group(3)
-        inner_where = m.group(4)  # may be None
+        inner_where = m.group(4)  
 
-        # Parse table and alias from FROM part (e.g., "Works_On W" or "Works_On")
+        # obtain table name from from_part
         parts = from_part.split()
         table_name = parts[0]
 
-        # Build right subtree: relation (and maybe a selection on top)
-        right_rel = QueryNode(RELATION, table_name)
+        right_relation = QueryNode(RELATION, table_name) # we create right relation node
         if inner_where and inner_where.strip():
-            right_subtree = QueryNode(SELECT, inner_where.strip(), left=right_rel)
+            right_subtree = QueryNode(SELECT, inner_where.strip(), left=right_relation)
         else:
-            right_subtree = right_rel
+            right_subtree = right_relation
 
-        # Left subtree is whatever was under the original σ node
+        # Left subtree is whatever was under the og node
         left_subtree = node.left
 
-        # Build semi/anti-join node
+       # -- build the semi/anti-join nodes here -- 
         join_type = ANTI_JOIN if anti else SEMI_JOIN
         join_cond = outer_col + " = " + inner_col
         join_node = QueryNode(join_type, "", left=left_subtree, right=right_subtree,
@@ -909,16 +950,14 @@ class QueryOptimizer:
 
         return join_node
 
+# parts for extra credit
     def _unnest_subqueries(self, node):
-        """
-        Extra credit: unnest nested subquery patterns into semi/anti-joins.
-
-        Supported:
-          - col IN (SELECT col FROM T [WHERE ...])     -> SEMI_JOIN (⋉)
-          - col NOT IN (SELECT col FROM T [WHERE ...]) -> ANTI_JOIN (▷)
-
-        EXISTS/NOT EXISTS are only detected/logged.
-        """
+        '''
+        function that unnests in/not in subqueries into semi/anti-joins
+        - if node is select, we check for IN/NOT IN patterns 
+        - we use regular expressions to identify these patterns
+        - call function with true/false parameter
+        '''
         if node is None:
             return None
 
@@ -926,60 +965,56 @@ class QueryOptimizer:
             text = node.data
 
             # NOT IN -> anti-join
-            if re.search(r'\bNOT\s+IN\s*\(\s*SELECT', text, re.IGNORECASE):
-                new_node = self._unnest_in_subquery(node, anti=True)
-                if new_node is not None:
-                    self.optimizations_applied.append(
-                        "Extra Credit: Converted NOT IN subquery to anti-join (▷)"
+            if re.search(r'\bNOT\s+IN\s*\(\s*SELECT', text, re.IGNORECASE): # look for NOT IN pattern
+                new_node = self._unnest_in_subquery(node, anti=True) # call unnest function with anti=True
+                if new_node is not None: # if` we succesfully created anti-join
+                    self.optimizations_applied.append( # mark apply
+                        "not in --> anti-join"
                     )
                     new_node.left = self._unnest_subqueries(new_node.left)
                     new_node.right = self._unnest_subqueries(new_node.right)
                     return new_node
 
             # IN -> semi-join
-            if re.search(r'\bIN\s*\(\s*SELECT', text, re.IGNORECASE):
-                new_node = self._unnest_in_subquery(node, anti=False)
-                if new_node is not None:
+            if re.search(r'\bIN\s*\(\s*SELECT', text, re.IGNORECASE): 
+                new_node = self._unnest_in_subquery(node, anti=False) # call unnest function with anti=False
+                if new_node is not None: # if we successfully created a semi-join
                     self.optimizations_applied.append(
-                        "Extra Credit: Converted IN subquery to semi-join (⋉)"
+                        "in --> semi-join ⋉" # mark applied
                     )
                     new_node.left = self._unnest_subqueries(new_node.left)
                     new_node.right = self._unnest_subqueries(new_node.right)
                     return new_node
 
-            # Just log EXISTS / NOT EXISTS if you want
-            if re.search(r'\bEXISTS\s*\(\s*SELECT', text, re.IGNORECASE):
-                self.optimizations_applied.append(
-                    "Extra Credit: (detected) EXISTS subquery (no structural transform)"
-                )
-            if re.search(r'\bNOT\s+EXISTS\s*\(\s*SELECT', text, re.IGNORECASE):
-                self.optimizations_applied.append(
-                    "Extra Credit: (detected) NOT EXISTS subquery (no structural transform)"
-                )
 
+        # we appply to children nodes too
         node.left = self._unnest_subqueries(node.left)
         node.right = self._unnest_subqueries(node.right)
         return node
-    
-    # ---------- Common helper methods ----------
 
     def _estimate_selectivity(self, condition):
-        """Estimate selectivity"""
+        '''
+        estimate selecitivity function 
+        '''
         if '=' in condition:
-            if any(k in condition.upper() for k in ['SSN', 'NUMBER', 'PNO', 'ESSN', 'DNUM']):
+            if any(k in condition.upper() for k in ['SSN', 'NUMBER', 'PNO', 'ESSN', 'DNUM']): # primary keys that were in the samples
                 return 0.05
             return 0.2
-        if any(op in condition for op in ['>', '<', '>=', '<=', '!=']): 
+        if any(op in condition for op in ['>', '<', '>=', '<=', '!=']): # ranges
             return 0.33
         return 0.5
 
     def _get_referenced_tables(self, condition):
-        """Get aliases referenced in a condition"""
-        matches = re.findall(r'([A-Za-z_]\w*)\.\w+', condition)
+        '''
+        aliases of tables referenced in a condition
+        '''
+        matches = re.findall(r'([A-Za-z_]\w*)\.\w+', condition) # match patterns regular expressions 
         return set(matches)
     
     def _get_node_tables(self, node):
-        """Get all table names in a subtree (resolved names)"""
+        '''
+        get all tables in subtree rooted at node
+        '''
         if node is None:
             return set()
         tables = set()
@@ -990,16 +1025,27 @@ class QueryOptimizer:
         return tables
     
     def _is_join_condition(self, condition):
-        """Check if condition is a join condition"""
+        '''
+
+        just check if condition references at least two different tables
+
+        '''
         if '=' not in condition:
             return False
         refs = self._get_referenced_tables(condition)
         return len(refs) >= 2
 
-# --- SQL reconstruction helpers ---
+# stuff to convert to SQL
 
 def collect_where_conditions(node, conditions):
-    """Traverse tree and collect all WHERE-selection conditions (σ nodes)."""
+    '''
+
+    obtain all WHERE conditions from SELECT nodes in the tree via 
+    - recursive traversal
+    - if it sees a select, will append condition to conditions 
+    - traverse on left
+
+    '''
     if node is None:
         return
     if node.node_type == SELECT:
@@ -1010,39 +1056,47 @@ def collect_where_conditions(node, conditions):
         collect_where_conditions(node.right, conditions)
 
 def find_top_project(node):
-    """Find the topmost PROJECT node, if any."""
+    ''' 
+
+    just obtain the top project
+    - search tree, top-down
+    - or keeps searching recursively 
+
+    '''
     if node is None:
         return None
-    if node.node_type == PROJECT:
+    if node.node_type == PROJECT: # if current node is project, just return it
         return node
-    left = find_top_project(node.left)
-    if left:
+    left = find_top_project(node.left) # or keep searching left
+    if left: 
         return left
     return find_top_project(node.right)
 
 def build_sql_from_tree(root, parsed):
-    """
-    Convert the optimized query tree back into a runnable SQL query.
+    '''
+    develop sql query from the optimized treee
+    - take select from highest project or from inital select
+    - where is obtained from various selects + join with AND
 
-    NOTE: Semi/anti-join nodes (⋉/▷) are represented only in the tree; this
-    function currently only regenerates WHERE from remaining σ nodes.
-    """
-    # SELECT clause
-    project_node = find_top_project(root)
-    if project_node is not None and project_node.data:
-        select_clause = project_node.data
-    else:
-        select_clause = parsed['select'] if parsed['select'] else '*'
+    '''
     
-    from_clause = parsed['from']
+    project_node = find_top_project(root) # find top project node
+    if project_node is not None and project_node.data: # if project node exists and has data
+        select_clause = project_node.data # that's our select clause
+    else:
+        select_clause = parsed['select'] if parsed['select'] else '*' # or just use the original seelect
+    
+    from_clause = parsed['from'] # these stay the same
     group_by_clause = parsed['group_by']
     having_clause = parsed['having']
     order_by_clause = parsed['order_by']
     
-    where_conditions = []
-    collect_where_conditions(root, where_conditions)
+    where_conditions = [] # initalize where conditions list
+    collect_where_conditions(root, where_conditions) # collect all where conditions from tree
     
-    sql_lines = []
+    sql_lines = [] # initalize sql list
+
+    # append everything in 
     sql_lines.append("SELECT " + select_clause)
     sql_lines.append("FROM " + from_clause)
     
@@ -1060,31 +1114,49 @@ def build_sql_from_tree(root, parsed):
     
     return "\n".join(sql_lines) + ";"
 
-# --- Schema loading and main driver ---
-
 def load_schema_from_file(content):
+    '''
+
+    parse schema from file content
+    - use regular expressions to find table definitions
+    - for each table, extract attributes, primary keys, unique constraints
+    - return schema dictionary
+
+    '''
     schema = {}
-    table_pattern = r'(\w+)\s*\((.*?)\);'
-    matches = re.findall(table_pattern, content, re.DOTALL | re.IGNORECASE)
+    table_pattern = r'(\w+)\s*\((.*?)\);' # regex pattern to match table definitions
+    matches = re.findall(table_pattern, content, re.DOTALL | re.IGNORECASE) # find all matches in content
     for table_name, definition in matches:
-        schema[table_name] = {'attributes': [], 'primary_key': [], 'unique': []}
-        lines = [line.strip() for line in definition.split(',')]
+        schema[table_name] = {'attributes': [], 'primary_key': [], 'unique': []} # initialize schema entry
+        lines = [line.strip() for line in definition.split(',')] # split definition into lines
         for line in lines:
             if 'PRIMARY KEY' in line.upper():
-                m = re.search(r'PRIMARY KEY\s*\(\s*(\w+)', line, re.IGNORECASE)
+                m = re.search(r'PRIMARY KEY\s*\(\s*(\w+)', line, re.IGNORECASE) # extract PK
                 if m:
-                    schema[table_name]['primary_key'].append(m.group(1))
+                    schema[table_name]['primary_key'].append(m.group(1)) # add to primary key list
             elif 'UNIQUE' in line.upper():
-                m = re.search(r'UNIQUE\s*\(\s*(\w+)', line, re.IGNORECASE)
+                m = re.search(r'UNIQUE\s*\(\s*(\w+)', line, re.IGNORECASE) # extract unique constraints
                 if m:
-                    schema[table_name]['unique'].append(m.group(1))
+                    schema[table_name]['unique'].append(m.group(1)) # add to unique list
             else:
                 m = re.match(r'(\w+)', line)
                 if m:
-                    schema[table_name]['attributes'].append(m.group(1))
+                    schema[table_name]['attributes'].append(m.group(1)) 
     return schema
 
 def process_query_file(filename):
+    '''
+
+    function that will:
+    1. open the file and read contents 
+    2. extract schema
+    3. build schema dictionary
+    4. parse SQL
+    5. build canonical query tree
+    6. optimize query tree
+    7. convert optimized tree back to SQL.
+
+    '''
     # open file and read contents
     with open(filename, 'r', encoding='utf-8') as f:
         content = f.read()
@@ -1092,7 +1164,7 @@ def process_query_file(filename):
     schema = load_schema_from_file(content)
     query_match = re.search(r'-- SQL Query --(.*)', content, re.DOTALL | re.IGNORECASE)
         
-            
+    
     query = query_match.group(1).strip()
     parser = SQLParser(query, schema)
     parsed = parser.parse()
