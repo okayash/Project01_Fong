@@ -6,13 +6,14 @@
 ## Commands or steps needed to build and run your program. 
 
 1. Download the ZIP file
-2. python3 -m venv venv
-source venv/bin/activate
+2. Run the following commands:
+``python3 -m venv venv``
+``source venv/bin/activate``
 3. The program can be executed within the directory via the following commands:
 
-For console output: python3 Project1/optimizer.py  [filename].txt
+For console output: ``python3 Project1/optimizer.py  [filename].txt``
 
-To store output into a text file: python3 Project1/optimizer.py [filename].txt > output.txt
+To store output into a text file: ``python3 Project1/optimizer.py [filename].txt > output.txt``
 
 ## Any external libraries, tools, or dependencies required. 
 
