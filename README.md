@@ -92,3 +92,9 @@ an SQL query with refinements will also be output, which is the optimized query 
 
 Finally, a description of the rules applied will be output.
 
+issues: the trees kinda are different from the expected outputs, even if the correct rules are being applied, idk
+- exists/not exists isn't really working yet.
+
+some difficulies:
+- ensuring that not all selections are pushed down, since some need to be converted to joins with cartsian products.
+- 
