@@ -30,6 +30,12 @@ sys - System Parameters and Functions
 # Input Requirements 
 ## Expected input format (e.g., SQL query text file, command-line input).
 Inputs must be an SQL query text file containing only alphanumeric characters with schema definitions containing attributes, followed by SQL queries.
+1. Schema definitions are in the form: 
+TableName(attr1, attr2, ..., 
+PRIMARY KEY(...), 
+UNIQUE(...));
+
+2. -- SQL Query -- will be written above the SQL queries
 
 ## Any assumptions about schema names, attributes, or query structure. 
 ### Assumptions: 
