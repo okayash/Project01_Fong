@@ -1,0 +1,32 @@
+-- Schema Definitions --
+Employee(
+  Fname, Minit, Lname, Ssn, Bdate, Address, Sex, Salary, Super_ssn, Dno,
+  PRIMARY KEY(Ssn)
+);
+
+Project(
+  Pname, Pnumber, Plocation, Dnum,
+  PRIMARY KEY(Pnumber),
+  UNIQUE(Pname)
+);
+
+Works_On(
+  Essn, Pno, Hours,
+  PRIMARY KEY(Essn, Pno)
+); 
+
+-- SQL Query --
+SELECT 
+    P.Pnumber,
+    P.Pname,
+    COUNT(E.Ssn) AS NumEmployees,
+    SUM(W.Hours) AS TotalHours
+FROM PROJECT P, WORKSON W, EMPLOYEE E
+WHERE P.Pnumber = W.Pno
+  AND E.Ssn = W.Essn
+  AND P.Plocation = 'Dallas'
+  AND E.Sex = 'F'
+  AND E.Salary >= 70000
+GROUP BY P.Pnumber, P.Pname
+HAVING SUM(W.Hours) > 100
+ORDER BY P.Pname DESC;
