@@ -1,0 +1,81 @@
+Canonical Tree
+└── π P.Pnumber, P.Pname, COUNT(E.Ssn), SUM(W.Hours)
+    └── HAVING SUM(W.Hours) > 100
+        └── GROUP BY P.Pnumber, P.Pname
+            └── σ P.Pnumber = W.Pno AND E.Ssn = W.Essn AND P.Plocation = 'Dallas' AND E.Sex = 'F' AND E.Salary >= 70000
+                └── x
+                    ├── x
+                    │   ├── PROJECT P
+                    │   └── WORKSON W
+                    └── EMPLOYEE E
+
+Step 1 and 2 Cascade of selections and push selections down
+
+└── π P.Pnumber, P.Pname, COUNT(E.Ssn), SUM(W.Hours)
+    └── HAVING SUM(W.Hours) > 100
+        └── GROUP BY P.Pnumber, P.Pname
+            └── σ E.Ssn = W.Essn
+                └── x
+                    ├── σ P.Pnumber = W.Pno
+                    │   └── x
+                    │       ├── σ P.Plocation = 'Dallas'
+                    │       │   └── PROJECT P
+                    │       └── WORKSON W
+                    └── σ (E.Sex = 'F') AND (E.Salary >= 70000)
+                        └── EMPLOYEE E
+
+Step 3 selections with smallest selectivity
+
+└── π P.Pnumber, P.Pname, COUNT(E.Ssn), SUM(W.Hours)
+    └── HAVING SUM(W.Hours) > 100
+        └── GROUP BY P.Pnumber, P.Pname
+            └── σ E.Ssn = W.Essn
+                └── x
+                    ├── σ P.Pnumber = W.Pno
+                    │   └── x
+                    │       ├── σ P.Plocation = 'Dallas'
+                    │       │   └── PROJECT P
+                    │       └── WORKSON W
+                    └── σ (E.Sex = 'F') AND (E.Salary >= 70000)
+                        └── EMPLOYEE E
+
+Step 4 Replace x with Joins
+
+└── π P.Pnumber, P.Pname, COUNT(E.Ssn), SUM(W.Hours)
+    └── HAVING SUM(W.Hours) > 100
+        └── GROUP BY P.Pnumber, P.Pname
+            └── ⋈ E.Ssn = W.Essn
+                ├── ⋈ P.Pnumber = W.Pno
+                │   ├── σ P.Plocation = 'Dallas'
+                │   │   └── PROJECT P
+                │   └── WORKSON W
+                └── σ (E.Sex = 'F') AND (E.Salary >= 70000)
+                    └── EMPLOYEE E
+
+Step 5 push projections Down
+
+└── π P.Pnumber, P.Pname, COUNT(E.Ssn), SUM(W.Hours)
+    └── HAVING SUM(W.Hours) > 100
+        └── GROUP BY P.Pnumber, P.Pname
+            └── ⋈ E.Ssn = W.Essn
+                ├── π P.Pname, W.Hours, P.Pnumber, W.Essn
+                │   └── ⋈ P.Pnumber = W.Pno
+                │       ├── π P.Pname, P.Pnumber
+                │       │   └── σ P.Plocation = 'Dallas'
+                │       │       └── PROJECT P
+                │       └── π W.Pno, W.Hours
+                │           └── WORKSON W
+                └── π E.Ssn
+                    └── σ (E.Sex = 'F') AND (E.Salary >= 70000)
+                        └── EMPLOYEE E
+
+Optimimzed Query for ec
+
+SELECT P.Pnumber, P.Pname, COUNT(E.Ssn), SUM(W.Hours)
+FROM PROJECT P
+INNER JOIN WORKSON W ON P.Pnumber = W.Pno
+INNER JOIN EMPLOYEE E ON E.Ssn = W.Essn
+WHERE P.Plocation = 'Dallas' AND (E.Sex = 'F') AND (E.Salary >= 70000)
+GROUP BY P.Pnumber, P.Pname
+HAVING SUM(W.Hours) > 100
+ORDER BY P.Pname DESC;
